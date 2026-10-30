@@ -71,6 +71,10 @@
     "CONFIG_OVERLAY_FS": [
       "y",
       "m"
+    ],
+    "CONFIG_DM_BUFIO": [
+      "y",
+      "m"
     ]
   }
 }

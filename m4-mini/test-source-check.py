@@ -69,7 +69,7 @@ class SourceCheck(unittest.TestCase):
             complete = base + ''.join(f'{key}={values[-1]}\n' for key, values in required.items())
             config.write_text(complete)
             checker.check_config(config, required)
-            for key in ('CONFIG_DM_CRYPT', 'CONFIG_DM_INTEGRITY'):
+            for key in ('CONFIG_DM_CRYPT', 'CONFIG_DM_INTEGRITY', 'CONFIG_DM_BUFIO'):
                 config.write_text(complete.replace(f'{key}={required[key][-1]}\n', ''))
                 with self.assertRaisesRegex(ValueError, key):
                     checker.check_config(config, required)
