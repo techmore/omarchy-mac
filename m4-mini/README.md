@@ -33,4 +33,4 @@ The planned Apple and Logitech keyboard, mouse and trackpad pairing experience i
 
 The [deeper upstream desktop audit](audits/2026-10-30-upstream-desktop.md) records the current Omarchy and Aurora branch differences, missing candidate configuration and a scheduler patch-placement conflict.
 
-The planned [Signal messaging release goal](SIGNAL-RELEASE-GOAL.md) carries forward the prior M-series desktop work and tracks ARM64 packaging and M4 qualification.
+The [desktop applications follow-up](SIGNAL-RELEASE-GOAL.md) tracks the owner’s separate SDK Messages/Signal app and F5 speech workflow for review after M4 bring-up.

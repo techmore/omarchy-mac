@@ -1,8 +1,12 @@
-# Release goal: Signal messaging on the M4 desktop
+# Desktop applications to revisit after M4 bring-up
 
 **Status: planned; Signal has not been tested on the Omarchy M4 candidate.**
 
-Restore the Signal desktop experience from the owner's M-series work: an easy-to-find messaging app with working conversations, notifications and normal desktop integration on the M4 Mac mini.
+The owner identified a separate Messages app in their elementaryOS SDK that worked with Signal, and also wants the F5 speaking workflow. Identify and review both SDK applications after M4 kernel and HDMI bring-up. The Signal Desktop research below is related background, not confirmation that it is the requested Messages app.
+
+The existing M-series F5 work is [local speech-to-text dictation](https://github.com/techmore/ElementaryOS_MSeries/blob/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/dictation/F5-ENGLISH-ACCEPTANCE.md), with additional voice reply work. Determine which SDK implementation the owner means and assess ARM64/M4 audio, shortcut, text insertion and model dependencies after the desktop is stable; prior app-specific acceptance gaps remain open.
+
+## Related Signal Desktop background
 
 ## Existing work
 
@@ -10,7 +14,7 @@ The earlier [M-series handoff](https://github.com/techmore/ElementaryOS_MSeries/
 
 Omarchy already offers Signal on demand and binds `Super+Shift+G` to its launcher. Its current script expects the `signal-desktop` package and `/usr/bin/signal-desktop`. [Arch Linux ARM lists an aarch64 package](https://archlinuxarm.org/packages/aarch64/signal-desktop); verify availability from the actual target repositories and test it before choosing a delivery path. The community-maintained [Flathub package](https://flathub.org/en/apps/org.signal.Signal) also lists aarch64. Signal's [support page](https://support.signal.org/hc/en-us/articles/360008216551-Installing-Signal) currently describes Linux support as x86_64 only, while the [Flathub manifest](https://github.com/flathub/org.signal.Signal/blob/master/org.signal.Signal.yaml) references a Signal-hosted ARM64 Debian package. Treat official support status as unresolved and confirm it for the selected release.
 
-## Acceptance criteria
+## Signal Desktop research criteria
 
 - A supported, maintained ARM64 delivery path installs and updates reproducibly on the selected Omarchy image; confirm its source, package provenance, repository priority and architecture. It works through Omarchy's application launcher and Signal shortcut, without relying on the path of an unrelated packaging format.
 - Link the desktop with the owner's Signal phone through the normal in-app flow. In a user-controlled test, send and receive messages and attachments, receive a desktop notification, restart the app and verify the linked session remains usable. Verify link handling, tray/window identity, and file-picker and screenshot drag-and-drop with the chosen Wayland/portal and packaging path. Voice/video calls are a separate test if desired.
