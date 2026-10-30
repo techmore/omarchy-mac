@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Assemble an offline M4 integration bundle; never install or alter a boot device."""
+import argparse
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
+EXPECTED = {
+    'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
+    'loader': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
+    'boot': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
+    'mesa-source': 'a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778',
+    'mesa-launcher': '508c8636a0651a2f267a0e009ad9e15f1c7e1ea839b81a7311a96f76d12603b7',
+    'mesa-uwsm': '26bee13a3f39eb06c37992300f81909cc5529858e9a76e929c9247d65f04be89',
+}
+
+
+def sha_file(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def member(archive, name):
+    matches = [item for item in archive.getmembers() if item.name == name and item.isfile()]
+    if len(matches) != 1:
+        raise ValueError(f'package does not contain exactly one regular {name}')
+    with archive.extractfile(matches[0]) as stream:
+        return stream.read()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--kernel-package', required=True, type=Path)
+    parser.add_argument('--loader-package', required=True, type=Path)
+    parser.add_argument('--boot-sample', required=True, type=Path)
+    parser.add_argument('--mesa-prepared', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    args = parser.parse_args()
+    sources = {
+        'kernel': args.kernel_package, 'loader': args.loader_package, 'boot': args.boot_sample,
+        'mesa-source': args.mesa_prepared / 'm4-mesa-source.tar.gz',
+        'mesa-launcher': args.mesa_prepared / 'm4-mini-run-mesa',
+        'mesa-uwsm': args.mesa_prepared / 'm4-mesa-uwsm-env',
+        'mesa-recipe': args.mesa_prepared / 'PKGBUILD',
+    }
+    try:
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('a new output directory is required')
+        boot_path = 'packages/omarchy-mac/boot'
+        dirty = subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=normal', '--', boot_path], text=True)
+        if dirty:
+            raise ValueError('Omarchy Mac boot source must be committed before bundling')
+        boot_commit = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
+        boot_source = subprocess.check_output(['git', '-C', str(ROOT), 'archive', '--format=tar', 'HEAD', boot_path])
+        if (args.mesa_prepared / 'INCOMPLETE').exists():
+            raise ValueError('Mesa preparation is incomplete')
+        template = (ROOT / 'm4-mini/arch-research/PKGBUILD-mesa.in').read_text()
+        recipe = (template.replace('@SOURCE_SHA256@', EXPECTED['mesa-source'])
+                  .replace('@LAUNCHER_SHA256@', EXPECTED['mesa-launcher'])
+                  .replace('@UWSM_SHA256@', EXPECTED['mesa-uwsm']))
+        expected = EXPECTED.copy()
+        expected['mesa-recipe'] = hashlib.sha256(recipe.encode()).hexdigest()
+        for name, path in sources.items():
+            if path.is_symlink() or not path.is_file() or sha_file(path) != expected[name]:
+                raise ValueError(f'{name} is missing, linked or does not match its locked hash')
+        with tarfile.open(args.kernel_package, 'r:*') as kernel, tarfile.open(args.loader_package, 'r:*') as loader:
+            base = f'usr/lib/modules/{KVER}/'
+            dtb = member(kernel, base + 'dtbs/apple/t8132-j773g.dtb')
+            image = member(kernel, base + 'vmlinuz')
+            stage2 = member(loader, 'usr/lib/asahi-boot/omarchy-m4-research/m1n1.bin')
+            uboot = member(loader, 'usr/lib/asahi-boot/omarchy-m4-research/u-boot-nodtb.bin')
+        if hashlib.sha256(dtb).hexdigest() != '734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3':
+            raise ValueError('kernel package has the wrong J773g device tree')
+        if ('Linux version ' + KVER + ' ').encode() not in image:
+            raise ValueError('kernel package image has the wrong release')
+        boot = args.boot_sample.read_bytes()
+        offset = len(stage2) + len(dtb)
+        if boot[:len(stage2)] != stage2 or boot[len(stage2):offset] != dtb or gzip.decompress(boot[offset:]) != uboot:
+            raise ValueError('boot sample does not match the packaged stage 2, J773g tree and U-Boot')
+
+        args.output.mkdir()
+        marker = args.output / 'INCOMPLETE'
+        marker.write_text('Do not use this incomplete bundle.\n')
+        destinations = {
+            'kernel': 'kernel/' + args.kernel_package.name,
+            'loader': 'bootloader/' + args.loader_package.name,
+            'boot': 'bootloader/boot-sample.bin',
+            'mesa-source': 'mesa/m4-mesa-source.tar.gz',
+            'mesa-launcher': 'mesa/m4-mini-run-mesa',
+            'mesa-uwsm': 'mesa/m4-mesa-uwsm-env',
+            'mesa-recipe': 'mesa/PKGBUILD',
+        }
+        for name, relative in destinations.items():
+            destination = args.output / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(sources[name], destination)
+            if sha_file(destination) != expected[name]:
+                raise ValueError(f'copy verification failed: {name}')
+        shutil.copyfile(ROOT / 'm4-mini/r7-rootfix-build-2026-10-30.json', args.output / 'kernel-build-receipt.json')
+        (args.output / 'omarchy-mac-boot-source.tar.gz').write_bytes(gzip.compress(boot_source, mtime=0))
+        (args.output / 'DO-NOT-INSTALL.txt').write_text(
+            'RESEARCH ONLY: this bundle is not an installer. Packages are unsigned and unqualified.\n'
+            'boot-sample.bin is not target-specific and must not be written to an ESP.\n'
+            'The Mesa recipe is unbuilt on Arch. Boot, HDMI and recovery remain unverified.\n')
+        manifest = {'scope': 'offline M4 Omarchy integration research; no deployment or hardware qualification',
+                    'kernel_release': KVER, 'omarchy_boot_source_commit': boot_commit, 'hardware_validated': False,
+                    'files': {relative: expected[name] for name, relative in destinations.items()},
+                    'checks': ['package image release matches', 'J773g DTB matches the boot sample',
+                               'stage 2 and decompressed U-Boot match the loader package'],
+                    'limitations': ['unsigned packages', 'Mesa recipe unbuilt on Arch',
+                                    'boot sample has no target-specific configuration',
+                                    'no verified recovery, native boot or HDMI']}
+        for name in ('kernel-build-receipt.json', 'omarchy-mac-boot-source.tar.gz', 'DO-NOT-INSTALL.txt'):
+            manifest['files'][name] = sha_file(args.output / name)
+        (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+        marker.unlink()
+    except (OSError, ValueError, tarfile.TarError, EOFError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-assemble-omarchy-research: {error}', file=sys.stderr)
+        return 1
+    print('Offline M4 kernel, boot and Mesa research bundle assembled; nothing installed.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
