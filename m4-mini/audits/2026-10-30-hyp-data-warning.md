@@ -16,4 +16,14 @@ readelf -SW vmlinux
 nm -n vmlinux | grep -E '__hyp_data_(start|end)$'
 ```
 
+The later encrypted-root research configuration (`b45421f50feb6a6114d0f1bb694ccc6fbb1763780e9a715291ae1cc584d949fa`)
+emitted the same warning. Its linked hypervisor object and `vmlinux.o` again
+have a zero-byte `.hyp.data` without the alloc flag, and its final `vmlinux`
+has equal `__hyp_data_start` and `__hyp_data_end` addresses. Their SHA-256
+hashes, in that order, are `33c78e1898fbd88e1cc816000466fa0dd4324b33e98f58d2d687be2da06c8b03`,
+`943387ca3101e0bb476f21f8f51de68e88f255dd5097d7d952be8379499733c2`, and
+`e699b7c609ffd01720e932b376a37d4c53b63363566b478c6acbef6d062b85f6`.
+This supports the same empty-placeholder explanation for that build; it is
+not a hardware KVM test or proof that all other boot warnings are benign.
+
 The inspected `kvm_nvhe.tmp.o`, `vmlinux.o`, and `vmlinux` SHA-256 hashes were respectively `33449aa7ce8d695d52f5f2ebcd23b0b9a7292bfd7d918ec60e89023faa4c5f1a`, `9131b3d783cec88b76b4530f6d2a02db884bc249825310915285d1d1f00e3f72`, and `c6ae725a228f340f34e5103a07dee5f49d8ed857f5cf7863465499de5b6277e1`. The candidate booted a generic QEMU ARM64 fixture without Apple hardware. No warning suppression or kernel linker change was made; the M4 boot, display and KVM remain untested.
