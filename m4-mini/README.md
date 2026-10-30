@@ -48,3 +48,7 @@ scripts/m4-mini-build --config-only --r7 /path/to/r7-checkout /path/to/new-r7-bu
 ```
 
 Remove `--config-only` and use a different new output directory to attempt the full build. The R7 combination has not completed Image/modules/DTBs, module linking, native boot, HDMI, networking or recovery testing.
+
+## Matching Mesa source
+
+The [M4 Mesa 6 research branch](https://github.com/techmore/mesa/tree/m4-mini-mesa6-research) carries the existing M-series graphics fixes on Gravity's pinned Mesa source. It retains the eight original upstream commits and their authorship. The eleven reviewed source files match the earlier Mesa 6 recipe, which previously passed an isolated ARM64 build and software tests; see [the Mesa source receipt](mesa-source-lock.json). This is not yet an Arch package or an M4 GPU/HDMI hardware result.
