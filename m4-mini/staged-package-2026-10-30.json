@@ -1,0 +1,14 @@
+{
+  "scope": "staging-only M4 artifact package and disposable Arch ARM hook check",
+  "package": "omarchy-m4-staged-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz",
+  "package_sha256": "038bc3c3349f8122a5da64456e59892bf510d327b25f755ce4b58bf249abb5b8",
+  "pkgbuild_sha256": "d81231dbb57da0f5ce722e39ad251b829b09e42d93a9d27cb29269fa2b1d678c",
+  "source_sha256": "f6713f78b0d9283cb15e431b0d497da5f92d44358d36fa310a65290b8c788508",
+  "input_bundle_manifest_sha256": "153ba29e120aff684f9347c14ca6b3b917aeac6fc5fd328696916ce6e3c86cd6",
+  "contents": "Nested kernel, loader and Mesa packages, sample boot chain, Omarchy boot source, and offline recovery tools are files under /usr/share/omarchy-m4-research/bundle. No nested package is installed by this package.",
+  "build_environment": "Local Ubuntu ARM64 VM using makepkg; no dependency resolution for this file-only package",
+  "check": "A real pacman fresh-install transaction in a disposable Arch ARM overlay with dependency checks disabled installed the staging package. The existing Asahi hook used a recording updater; it was not invoked, and the fixture's loader file was unchanged.",
+  "transaction_log_sha256": "70eeeef612dba01cd087d41ba2776ddec78129168937067faf8eb119b715a62d",
+  "limitations": ["unsigned research package", "only one fresh staging transaction was checked", "no production dependency resolution, future hooks or Gravity-side updater protection", "staging does not activate the kernel or prepare a qualified recovery", "no M4 hardware or HDMI validation"],
+  "hardware_validated": false
+}
