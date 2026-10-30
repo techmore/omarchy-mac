@@ -69,6 +69,21 @@ Stage 1 reads a fixed `m1n1/boot.bin`. Before the M4 Limine leaf writes boot fil
 
 `scripts/m4-mini-prepare-efi-research` combines that transition with a snapshot of the separately provisioned target ESP, its independently supplied stage-two hash, target firmware, a target kernel command line, and default and fallback initramfs images. On an Arch ARM staging host with `mkinitcpio`, `systemd-ukify` and Limine installed, it checks the kernel package and module dependency closure, builds and inspects both AArch64 UKIs, writes matching Limine entries, and makes a checksummed copy of the prior target ESP files. It also provides the locked raw stage-one binary and intended target ESP settings for an Asahi installer handoff. It creates only a new local directory; it neither provisions Apple's boot entry nor writes an ESP. A [local synthetic fixture receipt](efi-fixture-2026-10-30.json) records the completed assembly. Its UUIDs and firmware are placeholders, and the resulting example must not be installed.
 
+For a real target, use the independently captured Gravity capsule and a snapshot of the **separate** Omarchy system ESP created by the Asahi installer. The target snapshot must contain `m1n1/boot.bin`, `EFI/BOOT/BOOTAA64.EFI` and `vendorfw/firmware.cpio`; the command line and initramfs must come from the intended Omarchy installation. Set the following variables to those captured paths and identities before running on the Linux staging host:
+
+```sh
+scripts/m4-mini-prepare-efi-research \
+  --bundle "$M4_BUNDLE" --capsule "$GRAVITY_CAPSULE" \
+  --recovery-esp-partuuid "$GRAVITY_ESP_PARTUUID" --recovery-stage2-sha256 "$GRAVITY_STAGE2_SHA256" \
+  --target-esp-partuuid "$OMARCHY_ESP_PARTUUID" --target-stage2-sha256 "$OMARCHY_PREVIOUS_STAGE2_SHA256" \
+  --target-esp-snapshot "$OMARCHY_ESP_SNAPSHOT" --m1n1-config "$OMARCHY_M1N1_CONFIG" \
+  --cmdline "$OMARCHY_CMDLINE" --os-release "$OMARCHY_OS_RELEASE" \
+  --initramfs-default "$OMARCHY_INITRAMFS" --initramfs-fallback "$OMARCHY_FALLBACK_INITRAMFS" \
+  --output "$NEW_STAGING_DIRECTORY"
+```
+
+The resulting `stage1-handoff` is input for review and installer integration, not a signed Apple boot entry. The `esp-proposal` and `target-esp-recovery` directories are offline files; the existing Gravity entry remains the recovery route until target restoration has been rehearsed. Machine-provided vendor firmware must stay local.
+
 The kernel-selection helper can resolve an explicitly named installed kernel with `--select`, without changing any boot file; its automatic mode still refuses to choose when multiple Apple kernel packages are installed. Coexistence of the known-good and M4 research kernels therefore still needs an explicit, safe activation path that coordinates the chosen kernel with its m1n1 and device tree. The M4 Limine check accepts only a narrow default-menu layout and does not inspect one-shot EFI variables. The M4 check refuses to certify GRUB because it does not yet interpret GRUB's default or saved selection. Initramfs module checks establish presence, not a byte-for-byte comparison with the packaged modules. The packages and boot files have not been installed on the mini. The [KVM warning investigation](audits/2026-10-30-hyp-data-warning.md) traces the observed warning to an empty linker section in the examined build, without claiming hardware KVM validation.
 
 ## Wi-Fi DMA research
