@@ -126,6 +126,9 @@ def main():
         if args.output.exists() or args.output.is_symlink():
             raise ValueError('a new output directory is required')
         output = args.output.parent.resolve(strict=True) / args.output.name
+        filesystem = subprocess.check_output(['findmnt', '-n', '-T', str(output.parent), '-o', 'FSTYPE'], text=True).strip().lower()
+        if not filesystem or filesystem in ('vfat', 'fat', 'msdos', 'exfat'):
+            raise ValueError('output must be on a staging filesystem, not an EFI system partition')
         protected = (bundle, args.capsule.resolve(strict=True), snapshot)
         if any(output == p or output in p.parents or p in output.parents for p in protected):
             raise ValueError('output must be separate from every input tree')

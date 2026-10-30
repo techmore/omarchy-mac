@@ -1,8 +1,8 @@
 {
   "scope": "offline M4 EFI assembly using synthetic ESPs, firmware and root UUID; no Apple hardware",
-  "artifact": "m4-efi-fixture-proposal-v1.tar",
-  "artifact_sha256": "d5e3008cf45797ea10e85b4e9102a3f75f5f6b593d0005a889c9b5336ebaa1a9",
-  "builder_sha256": "2ec84a592d44103cf86dae1b8b26e450c44ec3388f426344907b7ed68cf0c61f",
+  "artifact": "m4-efi-fixture-proposal-v2.tar",
+  "artifact_sha256": "9f3dccf22282aa55cea27ab0e69122917e0f2f6c03a055b82ccec1525cd29e62",
+  "builder_sha256": "e0c3c6cf1bd423b71bf6015a2b28ad9df9806e55706eb16428474913b04c8358",
   "environment": "local Arch Linux ARM overlay, systemd-ukify 262.1, Limine 12.9.6",
   "kernel_image_sha256": "539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833",
   "default_uki_sha256": "0436516e82ebb2d92f8bfca8951647b99b3f4531f959dd47295157befb4b469c",

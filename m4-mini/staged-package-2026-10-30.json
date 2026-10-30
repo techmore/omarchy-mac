@@ -1,14 +1,14 @@
 {
   "scope": "staging-only M4 artifact package and disposable Arch ARM hook check",
-  "package": "omarchy-m4-staged-research-7.1.13.r7.rootfix-3-aarch64.pkg.tar.gz",
-  "package_sha256": "86329136b04b13252cce4c2330b6a1ebe01b1f6e4c867809ccbcee20126cb6b2",
-  "pkgbuild_sha256": "55d0fe77bf26b198c3a2344a8fb277de9889b716b7052765a4f203213475028b",
-  "source_sha256": "c1c0207a9fe5391be64449c54c32b71e2e9dbb5fbadc818914af66926e6962dd",
-  "input_bundle_manifest_sha256": "df2ef2fe2a49f0e02efbec9e94261877a49e42b38592d2d3502aa8d3cd96b676",
+  "package": "omarchy-m4-staged-research-7.1.13.r7.rootfix-4-aarch64.pkg.tar.gz",
+  "package_sha256": "26330ed01d8af0a0f726aeb9f26158e61676b2a6ae4604b0ee084848b02db763",
+  "pkgbuild_sha256": "a726b5421ae3cd427195378bbcd7719d44fb1d4f395d46a44603bce51beb15ff",
+  "source_sha256": "dd7fe2576c7666d3dd43da02850bb970b612750b23e4e9bb468f97fc2dd784d7",
+  "input_bundle_manifest_sha256": "4e9cd229bf2e61dfbc469d06008e289096dcbdb9e95a6a36d3b5a7840695fb40",
   "contents": "Nested kernel, loader and Mesa packages, sample boot chain, Omarchy boot source, and offline recovery tools are files under /usr/share/omarchy-m4-research/bundle. No nested package is installed by this package.",
   "build_environment": "Local Ubuntu ARM64 VM using makepkg; no dependency resolution for this file-only package",
-  "check": "A real pacman fresh-install transaction in a disposable Arch ARM overlay with dependency checks disabled installed staging release 3. The existing Asahi hook used a recording updater; it was not invoked, and the fixture's loader file was unchanged. Its outer paths and nested artifact hashes were checked.",
+  "check": "A real pacman fresh-install transaction in a disposable Arch ARM overlay with dependency checks disabled installed staging release 3. The existing Asahi hook used a recording updater; it was not invoked, and the fixture's loader file was unchanged. Release 4 updates the EFI helper, retains the same outer paths, and has its nested artifact hashes checked.",
   "transaction_log_sha256": "a2d00e2934bb96f2caf0e2409983e2a48b4537199159aa4df1096013200afdce",
-  "limitations": ["unsigned research package", "only a fresh staging transaction was checked", "no production dependency resolution, future hooks or Gravity-side updater protection", "staging does not activate the kernel or prepare a qualified recovery", "no M4 hardware or HDMI validation"],
+  "limitations": ["unsigned research package", "only the preceding release had a fresh staging transaction check", "no production dependency resolution, future hooks or Gravity-side updater protection", "staging does not activate the kernel or prepare a qualified recovery", "no M4 hardware or HDMI validation"],
   "hardware_validated": false
 }
