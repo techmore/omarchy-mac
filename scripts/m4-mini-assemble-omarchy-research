@@ -56,6 +56,8 @@ def main():
         'mesa-uwsm': args.mesa_prepared / 'm4-mesa-uwsm-env',
         'mesa-uwsm-loader': args.mesa_prepared / 'm4-mesa-uwsm-loader',
         'mesa-recipe': args.mesa_prepared / 'PKGBUILD',
+        'recovery-capsule': ROOT / 'scripts/m4-mini-recovery-capsule',
+        'boot-transition': ROOT / 'scripts/m4-mini-prepare-boot-transition',
     }
     try:
         if args.output.exists() or args.output.is_symlink():
@@ -78,6 +80,11 @@ def main():
                   .replace('@UWSM_LOADER_SHA256@', EXPECTED['mesa-uwsm-loader']))
         expected = EXPECTED.copy()
         expected['mesa-recipe'] = hashlib.sha256(recipe.encode()).hexdigest()
+        for name in ('recovery-capsule', 'boot-transition'):
+            path = sources[name]
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f'{name} must be a regular local script')
+            expected[name] = sha_file(path)
         for name, path in sources.items():
             if path.is_symlink() or not path.is_file() or sha_file(path) != expected[name]:
                 raise ValueError(f'{name} is missing, linked or does not match its locked hash')
@@ -116,11 +123,15 @@ def main():
             'mesa-uwsm': 'mesa/m4-mesa-uwsm-env',
             'mesa-uwsm-loader': 'mesa/m4-mesa-uwsm-loader',
             'mesa-recipe': 'mesa/PKGBUILD',
+            'recovery-capsule': 'scripts/m4-mini-recovery-capsule',
+            'boot-transition': 'scripts/m4-mini-prepare-boot-transition',
         }
         for name, relative in destinations.items():
             destination = args.output / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(sources[name], destination)
+            if name in ('recovery-capsule', 'boot-transition'):
+                destination.chmod(0o755)
             if sha_file(destination) != expected[name]:
                 raise ValueError(f'copy verification failed: {name}')
         shutil.copyfile(ROOT / 'm4-mini/r7-rootfix-build-2026-10-30.json', args.output / 'kernel-build-receipt.json')
