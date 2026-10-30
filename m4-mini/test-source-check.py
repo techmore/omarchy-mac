@@ -12,6 +12,13 @@ checker = SourceFileLoader('m4_source_check', str(HERE.parent / 'scripts/m4-mini
 
 
 class SourceCheck(unittest.TestCase):
+    def test_r7_kernel_and_mesa_lock_the_same_gpu_uapi(self):
+        mesa = json.loads((HERE / 'mesa-source-lock.json').read_text())
+        for name in ('source-lock-r7.json', 'source-lock-r7-rootfix.json'):
+            kernel = json.loads((HERE / name).read_text())
+            self.assertEqual(kernel['file_sha256']['include/uapi/drm/asahi_drm.h'],
+                             mesa['kernel_and_mesa_uapi_sha256'])
+
     def test_source_lock_rejects_changed_and_untracked_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

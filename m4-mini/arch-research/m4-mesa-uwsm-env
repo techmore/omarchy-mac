@@ -1,6 +1,8 @@
 # Optional UWSM research fragment; never installed into an active env.d path.
-# The session must explicitly opt in and the device tree must identify J773g.
+# The session must explicitly opt in, use the matching research kernel, and
+# the device tree must identify J773g.
 if [ "${OMARCHY_M4_MESA_RESEARCH:-0}" = 1 ] && [ -r /proc/device-tree/compatible ] &&
+  [ "$(uname -r)" = 7.1.13-omarchy-m4-r7-rootfix-ARCH ] &&
   tr '\000' '\n' </proc/device-tree/compatible | grep -Fxq 'apple,j773g'; then
   _omarchy_m4_mesa=/opt/omarchy-m4-mesa-research
   if [ -f "$_omarchy_m4_mesa/lib/libEGL_mesa.so.0" ] &&

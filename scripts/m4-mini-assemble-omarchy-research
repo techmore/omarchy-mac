@@ -13,13 +13,14 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[1]
 KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
 BOOT_COMMIT = 'b8ce4c47ddbf5f8d6b4e5305e899d0105b58a30a'
+UAPI_SHA = 'eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015'
 EXPECTED = {
     'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
     'loader': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
     'boot': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
     'mesa-source': 'a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778',
     'mesa-launcher': '508c8636a0651a2f267a0e009ad9e15f1c7e1ea839b81a7311a96f76d12603b7',
-    'mesa-uwsm': '26bee13a3f39eb06c37992300f81909cc5529858e9a76e929c9247d65f04be89',
+    'mesa-uwsm': 'f8b7f005b60bc8e29ed546b13605ac634a690992a7a0629f130cf6a5047aab54',
     'mesa-uwsm-loader': '921f6fdcd7412ab2522613c24c78838b502f4c08dd5166ac31805f1ebbdaccc4',
 }
 
@@ -80,6 +81,14 @@ def main():
         for name, path in sources.items():
             if path.is_symlink() or not path.is_file() or sha_file(path) != expected[name]:
                 raise ValueError(f'{name} is missing, linked or does not match its locked hash')
+        kernel_lock = json.loads((ROOT / 'm4-mini/source-lock-r7-rootfix.json').read_text())
+        mesa_lock = json.loads((ROOT / 'm4-mini/mesa-source-lock.json').read_text())
+        with tarfile.open(sources['mesa-source'], 'r:gz') as mesa_archive:
+            mesa_uapi = member(mesa_archive, 'techmore-mesa-96a24da/include/drm-uapi/asahi_drm.h')
+        if (kernel_lock['file_sha256'].get('include/uapi/drm/asahi_drm.h') != UAPI_SHA or
+                mesa_lock.get('kernel_and_mesa_uapi_sha256') != UAPI_SHA or
+                hashlib.sha256(mesa_uapi).hexdigest() != UAPI_SHA):
+            raise ValueError('kernel and Mesa source locks do not share the expected Asahi UAPI')
         with tarfile.open(args.kernel_package, 'r:*') as kernel, tarfile.open(args.loader_package, 'r:*') as loader:
             base = f'usr/lib/modules/{KVER}/'
             dtb = member(kernel, base + 'dtbs/apple/t8132-j773g.dtb')
@@ -121,9 +130,11 @@ def main():
             'boot-sample.bin is not target-specific and must not be written to an ESP.\n'
             'The Mesa recipe is unbuilt on Arch. Boot, HDMI and recovery remain unverified.\n')
         manifest = {'scope': 'offline M4 Omarchy integration research; no deployment or hardware qualification',
-                    'kernel_release': KVER, 'omarchy_boot_source_commit': BOOT_COMMIT, 'hardware_validated': False,
+                    'kernel_release': KVER, 'omarchy_boot_source_commit': BOOT_COMMIT,
+                    'asahi_uapi_sha256': UAPI_SHA, 'hardware_validated': False,
                     'files': {relative: expected[name] for name, relative in destinations.items()},
-                    'checks': ['package image release matches', 'J773g DTB matches the boot sample',
+                    'checks': ['package image release matches', 'locked kernel UAPI and Mesa archive header hashes match',
+                               'J773g DTB matches the boot sample',
                                'stage 2 and decompressed U-Boot match the loader package'],
                     'limitations': ['unsigned packages', 'Mesa recipe unbuilt on Arch',
                                     'boot sample has no target-specific configuration',
