@@ -1,13 +1,13 @@
 {
   "scope": "offline M4 EFI assembly using synthetic ESPs, firmware and root UUID; no Apple hardware",
-  "artifact": "m4-efi-fixture-proposal-v2.tar",
-  "artifact_sha256": "9f3dccf22282aa55cea27ab0e69122917e0f2f6c03a055b82ccec1525cd29e62",
-  "builder_sha256": "e0c3c6cf1bd423b71bf6015a2b28ad9df9806e55706eb16428474913b04c8358",
+  "artifact": "m4-efi-fixture-proposal-v3.tar",
+  "artifact_sha256": "e772cc7a118f40812338a1300d709de2549bae8c09cdf9b347ff1dc34f890acf",
+  "builder_sha256": "a5714325925bd5ef6f26e93abe176339c0a22b9aad2a3b2a72a9b8ae6c1c177e",
   "environment": "local Arch Linux ARM overlay, systemd-ukify 262.1, Limine 12.9.6",
   "kernel_image_sha256": "539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833",
   "default_uki_sha256": "0436516e82ebb2d92f8bfca8951647b99b3f4531f959dd47295157befb4b469c",
   "fallback_uki_sha256": "1fe4f7f3c86c7cddc78a75b3cf9d9062088af172ebfa1d71075a9c83fcb1561a",
-  "checks": ["UKI embedded kernel, initramfs and command line match their inputs", "both initramfs images contain the required M4 boot and display module dependency closures", "Limine menu passed the M4 default and fallback selection checker", "target stage-two recovery and vendor firmware bytes match the synthetic snapshot", "shared ESP, missing firmware and mismatched target stage-two inputs were rejected"],
+  "checks": ["UKI embedded kernel, initramfs and command line match their inputs", "both initramfs images contain the required M4 boot and display module dependency closures", "Limine menu passed the M4 default and fallback selection checker", "unsigned stage one and intended target ESP settings were included", "target stage-two recovery and vendor firmware bytes match the synthetic snapshot", "shared ESP, missing firmware and mismatched target stage-two inputs were rejected"],
   "limitations": ["all ESP identities, the root UUID and firmware are synthetic", "no Apple boot entry or stage-one pairing was created", "no real snapshot or restore was exercised", "no M4 boot, early console or HDMI test"],
   "hardware_validated": false
 }

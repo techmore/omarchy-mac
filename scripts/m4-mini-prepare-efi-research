@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
 KERNEL_SHA = '539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833'
+STAGE1_SHA = 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab'
 REQUIRED = ('nvme-apple', 'nvme-core', 'apple-sart', 'dm-mod', 'dm-bufio',
             'dm-crypt', 'dm-integrity', 'appledrm', 'asahi-m4', 'phy-apple-dptx')
 GUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
@@ -134,6 +135,9 @@ def main():
             raise ValueError('output must be separate from every input tree')
 
         package = regular(bundle / 'kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz')
+        stage1 = regular(bundle / 'bootloader/m1n1-stage1.bin')
+        if digest(stage1) != STAGE1_SHA:
+            raise ValueError('stage one does not match the locked M4 build')
         if digest(package) != 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d':
             raise ValueError('kernel package does not match the locked M4 build')
         prefix = f'usr/lib/modules/{KVER}/'
@@ -155,6 +159,14 @@ def main():
 
         output.mkdir(mode=0o700)
         (output / 'INCOMPLETE').write_text('Do not use an incomplete boot proposal.\n')
+        handoff = output / 'stage1-handoff'
+        handoff.mkdir()
+        shutil.copyfile(stage1, handoff / 'm1n1-stage1.bin')
+        (handoff / 'm1n1-stage1-options.conf').write_text(
+            f'chosen.asahi,efi-system-partition={target_esp}\nchainload={target_esp};m1n1/boot.bin\n')
+        (handoff / 'README.txt').write_text(
+            'Unsigned raw stage one and intended settings for the Asahi installer. '
+            'The installer must construct and personalize the Apple boot object; do not install this file directly.\n')
         transition = output / 'transition'
         subprocess.run([sys.executable, str(ROOT / 'scripts/m4-mini-prepare-boot-transition'),
                         '--bundle', str(bundle), '--capsule', str(args.capsule), '--partuuid', recovery_esp,
@@ -208,6 +220,8 @@ def main():
                    'target_previous_stage2_sha256': target_sha, 'gravity_capsule_manifest_sha256': digest(args.capsule / 'manifest.json'),
                    'target_snapshot_files': inventory, 'proposed_esp_files': proposal_files,
                    'target_firmware_sha256': inventory['vendorfw/firmware.cpio'],
+                   'stage1_sha256': digest(handoff / 'm1n1-stage1.bin'),
+                   'stage1_options_sha256': digest(handoff / 'm1n1-stage1-options.conf'),
                    'target_stage1_pairing_verified': False, 'recovery_tested': False, 'ready_for_activation': False,
                    'limitations': ['no Apple boot entry or stage-one pairing was created or verified',
                                    'recovery copy preserves file bytes, not filesystem metadata or boot policy',

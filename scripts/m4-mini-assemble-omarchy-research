@@ -18,6 +18,7 @@ EXPECTED = {
     'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
     'loader': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
     'boot': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
+    'stage1': 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab',
     'mesa-source': 'a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778',
     'mesa-launcher': '508c8636a0651a2f267a0e009ad9e15f1c7e1ea839b81a7311a96f76d12603b7',
     'mesa-uwsm': 'f8b7f005b60bc8e29ed546b13605ac634a690992a7a0629f130cf6a5047aab54',
@@ -49,6 +50,7 @@ def main():
     parser.add_argument('--kernel-package', required=True, type=Path)
     parser.add_argument('--loader-package', required=True, type=Path)
     parser.add_argument('--boot-sample', required=True, type=Path)
+    parser.add_argument('--stage1', type=Path, help='optional locked unsigned M4 stage-one binary')
     parser.add_argument('--mesa-prepared', required=True, type=Path)
     parser.add_argument('--mesa-package', type=Path, help='optional locked Arch ARM Mesa research package')
     parser.add_argument('--initramfs-dir', type=Path, help='optional locked generic Arch ARM fixture images')
@@ -67,6 +69,8 @@ def main():
     }
     if args.mesa_package is not None:
         sources['mesa-package'] = args.mesa_package
+    if args.stage1 is not None:
+        sources['stage1'] = args.stage1
     if args.initramfs_dir is not None:
         sources['initramfs-default'] = args.initramfs_dir / 'default.img'
         sources['initramfs-fallback'] = args.initramfs_dir / 'fallback.img'
@@ -168,6 +172,8 @@ def main():
         }
         if args.mesa_package is not None:
             destinations['mesa-package'] = 'mesa/' + args.mesa_package.name
+        if args.stage1 is not None:
+            destinations['stage1'] = 'bootloader/m1n1-stage1.bin'
         if args.initramfs_dir is not None:
             destinations['initramfs-default'] = 'initramfs/default.img'
             destinations['initramfs-fallback'] = 'initramfs/fallback.img'
@@ -211,6 +217,8 @@ def main():
             receipt = ROOT / 'm4-mini/display-initramfs-2026-10-30.json'
             shutil.copyfile(receipt, args.output / 'initramfs-build-receipt.json')
             manifest['files']['initramfs-build-receipt.json'] = sha_file(args.output / 'initramfs-build-receipt.json')
+        if args.stage1 is not None:
+            manifest['limitations'].append('stage one is unsigned and has not been paired to a target Apple boot entry')
         for name in ('kernel-build-receipt.json', 'omarchy-mac-boot-source.tar.gz', 'DO-NOT-INSTALL.txt'):
             manifest['files'][name] = sha_file(args.output / name)
         (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')

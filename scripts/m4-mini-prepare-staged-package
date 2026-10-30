@@ -17,10 +17,11 @@ LOCKED = {
     'kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
     'bootloader/m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
     'bootloader/boot-sample.bin': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
+    'bootloader/m1n1-stage1.bin': 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab',
     'mesa/mesa-omarchy-m4-research-26.3.0.r1-2-aarch64.pkg.tar.xz': '2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2',
     'omarchy-mac-boot-source.tar.gz': '6eb324a7423254820dcbbccd45be08f607af39c6b0398e696f8d9a1e3169a0f1',
     'scripts/m4-mini-prepare-boot-transition': 'e626e4dda12fc73d7a7b274841f189770f276c45ff281dca71cd6b36502cab30',
-    'scripts/m4-mini-prepare-efi-research': 'e0c3c6cf1bd423b71bf6015a2b28ad9df9806e55706eb16428474913b04c8358',
+    'scripts/m4-mini-prepare-efi-research': 'a5714325925bd5ef6f26e93abe176339c0a22b9aad2a3b2a72a9b8ae6c1c177e',
     'scripts/m4-mini-recovery-capsule': '1f10305b4f7666e8d0a01b6c4ea8f1430384e39b68358093d5d0b7439a1bdd46',
 }
 
