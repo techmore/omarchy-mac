@@ -24,7 +24,7 @@ done
 printf '%s  %s\n' \
   cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d "$kernel" \
   368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3 "$loader" \
-  62d22df6e8b2fcf691146ab8e851d585951c842585d0f4cfcd193ebed2f84bed "$boot_source" | sha256sum -c --status
+  6eb324a7423254820dcbbccd45be08f607af39c6b0398e696f8d9a1e3169a0f1 "$boot_source" | sha256sum -c --status
 if (( with_mesa )); then
   [[ -f $mesa && ! -L $mesa ]] || { echo 'The locked Mesa package is missing or linked' >&2; exit 1; }
   printf '%s  %s\n' 2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2 "$mesa" | sha256sum -c --status
@@ -92,7 +92,7 @@ for parent, dirs, names in os.walk(root, followlinks=False):
             raise SystemExit('special file in overlay: ' + relative)
 receipt = {'scope': 'uninstalled offline Omarchy M4 image overlay, not a bootable image',
            'kernel_release': '7.1.13-omarchy-m4-r7-rootfix-ARCH',
-           'omarchy_boot_source_commit': 'b8ce4c47ddbf5f8d6b4e5305e899d0105b58a30a',
+           'omarchy_boot_source_commit': '6bce21bfb1367f134416750f430a91c204d37831',
            'mesa_research_included': with_mesa, 'hardware_validated': False, 'files': files,
            'limitations': ['not an installer or package transaction', 'no target-specific ESP or recovery',
                            'Mesa runtime dependencies not installed' if with_mesa else 'no Mesa binaries',

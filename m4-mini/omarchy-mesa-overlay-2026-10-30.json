@@ -1,8 +1,8 @@
 {
   "scope": "local uninstalled M4 Omarchy research overlay with private Mesa files",
-  "archive": "m4-rootfix-mesa-overlay-v1.tar.gz",
-  "archive_sha256": "90046ebda4eea55f9013eb9a597bf0eacbed70feb2d8f43be999d83d7b962cee",
-  "bundle": "omarchy-m4-research-bundle-v9",
+  "archive": "m4-rootfix-mesa-overlay-v2.tar.gz",
+  "archive_sha256": "b8cefb782cebb2dc8458a733814205294a2f5d3cc0b5c44589c55e1823b53edb",
+  "bundle": "omarchy-m4-research-bundle-v12 via the staging package source",
   "kernel_release": "7.1.13-omarchy-m4-r7-rootfix-ARCH",
   "mesa_package_sha256": "2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2",
   "file_and_symlink_count": 1775,

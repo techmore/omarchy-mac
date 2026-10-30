@@ -12,7 +12,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
-BOOT_COMMIT = 'b8ce4c47ddbf5f8d6b4e5305e899d0105b58a30a'
+BOOT_COMMIT = '6bce21bfb1367f134416750f430a91c204d37831'
 UAPI_SHA = 'eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015'
 EXPECTED = {
     'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
@@ -23,6 +23,8 @@ EXPECTED = {
     'mesa-uwsm': 'f8b7f005b60bc8e29ed546b13605ac634a690992a7a0629f130cf6a5047aab54',
     'mesa-uwsm-loader': '921f6fdcd7412ab2522613c24c78838b502f4c08dd5166ac31805f1ebbdaccc4',
     'mesa-package': '2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2',
+    'initramfs-default': '9dbfa641f0b0ff908b9273dff229601f9a4287288bc4b336202558263e30e29e',
+    'initramfs-fallback': '71e65ddcf8e56cbc403a8b4012a8f0f9863f4f77bc370d570fd015f5259ea559',
 }
 
 
@@ -49,6 +51,7 @@ def main():
     parser.add_argument('--boot-sample', required=True, type=Path)
     parser.add_argument('--mesa-prepared', required=True, type=Path)
     parser.add_argument('--mesa-package', type=Path, help='optional locked Arch ARM Mesa research package')
+    parser.add_argument('--initramfs-dir', type=Path, help='optional locked generic Arch ARM fixture images')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     sources = {
@@ -60,9 +63,13 @@ def main():
         'mesa-recipe': args.mesa_prepared / 'PKGBUILD',
         'recovery-capsule': ROOT / 'scripts/m4-mini-recovery-capsule',
         'boot-transition': ROOT / 'scripts/m4-mini-prepare-boot-transition',
+        'efi-proposal': ROOT / 'scripts/m4-mini-prepare-efi-research',
     }
     if args.mesa_package is not None:
         sources['mesa-package'] = args.mesa_package
+    if args.initramfs_dir is not None:
+        sources['initramfs-default'] = args.initramfs_dir / 'default.img'
+        sources['initramfs-fallback'] = args.initramfs_dir / 'fallback.img'
     try:
         if args.output.exists() or args.output.is_symlink():
             raise ValueError('a new output directory is required')
@@ -84,7 +91,7 @@ def main():
                   .replace('@UWSM_LOADER_SHA256@', EXPECTED['mesa-uwsm-loader']))
         expected = EXPECTED.copy()
         expected['mesa-recipe'] = hashlib.sha256(recipe.encode()).hexdigest()
-        for name in ('recovery-capsule', 'boot-transition'):
+        for name in ('recovery-capsule', 'boot-transition', 'efi-proposal'):
             path = sources[name]
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f'{name} must be a regular local script')
@@ -157,14 +164,18 @@ def main():
             'mesa-recipe': 'mesa/PKGBUILD',
             'recovery-capsule': 'scripts/m4-mini-recovery-capsule',
             'boot-transition': 'scripts/m4-mini-prepare-boot-transition',
+            'efi-proposal': 'scripts/m4-mini-prepare-efi-research',
         }
         if args.mesa_package is not None:
             destinations['mesa-package'] = 'mesa/' + args.mesa_package.name
+        if args.initramfs_dir is not None:
+            destinations['initramfs-default'] = 'initramfs/default.img'
+            destinations['initramfs-fallback'] = 'initramfs/fallback.img'
         for name, relative in destinations.items():
             destination = args.output / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(sources[name], destination)
-            if name in ('recovery-capsule', 'boot-transition'):
+            if name in ('recovery-capsule', 'boot-transition', 'efi-proposal'):
                 destination.chmod(0o755)
             if sha_file(destination) != expected[name]:
                 raise ValueError(f'copy verification failed: {name}')
@@ -175,6 +186,7 @@ def main():
             'boot-sample.bin is not target-specific and must not be written to an ESP.\n'
             + ('Mesa was built for Arch ARM but has not been tested on the M4.\n' if args.mesa_package
                else 'The Mesa recipe is unbuilt on Arch.\n')
+            + ('The included initramfs images come from a generic fixture, not the target.\n' if args.initramfs_dir else '')
             + 'Boot, HDMI and recovery remain unverified.\n')
         manifest = {'scope': 'offline M4 Omarchy integration research; no deployment or hardware qualification',
                     'kernel_release': KVER, 'omarchy_boot_source_commit': BOOT_COMMIT,
@@ -193,6 +205,12 @@ def main():
             manifest['files']['mesa-build-receipt.json'] = sha_file(args.output / 'mesa-build-receipt.json')
         else:
             manifest['limitations'].append('Mesa recipe unbuilt on Arch')
+        if args.initramfs_dir is not None:
+            manifest['checks'].append('default and fallback initramfs match the M4 display fixture receipt')
+            manifest['limitations'].append('initramfs images are from a generic Arch ARM fixture, not the target')
+            receipt = ROOT / 'm4-mini/display-initramfs-2026-10-30.json'
+            shutil.copyfile(receipt, args.output / 'initramfs-build-receipt.json')
+            manifest['files']['initramfs-build-receipt.json'] = sha_file(args.output / 'initramfs-build-receipt.json')
         for name in ('kernel-build-receipt.json', 'omarchy-mac-boot-source.tar.gz', 'DO-NOT-INSTALL.txt'):
             manifest['files'][name] = sha_file(args.output / name)
         (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
