@@ -218,7 +218,7 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
   # drivers. Accept a built-in, otherwise require each package-owned module
   # in both images and, for Limine, in both embedded initramfs images.
   m4_storage_image_check() {
-    local image=$1 listing=$2 required
+    local image=$1 listing=$2 required module_path detail depfile
     module_list_has() {
       awk -v module="$required" '{
         name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
@@ -235,6 +235,51 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
             gsub(/_/, "-", name); if (name == module) found = 1 }
           END { exit !found }' "$listing" ||
           fail "$image is missing required M4 storage module $required"
+        # modules.dep describes modular dependencies. Check the full closure,
+        # since finding dm-crypt or dm-integrity alone does not establish that
+        # their helpers are available in the image. A built-in needs no module
+        # dependency traversal.
+        module_path=$(awk -v prefix="/usr/lib/modules/$kver/" -v module="$required" '
+          index($0, prefix) == 1 {
+            name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
+            sub(/\.ko(\.(gz|xz|zst))?$/, "", name); gsub(/_/, "-", name);
+            if (name == module) { print substr($0, length(prefix) + 1); count++ }
+          } END { exit count != 1 }' "$workdir/kernel-files") ||
+          fail "$kernel does not own exactly one $required module for $kver"
+        depfile=$(path "/usr/lib/modules/$kver/modules.dep")
+        [[ -r $depfile ]] || fail "$kernel has no readable modules.dep for $kver"
+        detail=$(awk -v root_module="$module_path" -v prefix="usr/lib/modules/$kver/" \
+          -v package_files="$workdir/kernel-files" -v image_files="$listing" '
+          function norm(p) { sub(/\.(gz|xz|zst)$/, "", p); return p }
+          BEGIN {
+            while ((getline line < package_files) > 0) {
+              sub(/^\//, "", line);
+              if (index(line, prefix) == 1) owned[norm(substr(line, length(prefix) + 1))] = 1
+            }
+            close(package_files)
+            while ((getline line < image_files) > 0) {
+              sub(/^\.\//, "", line);
+              if (index(line, prefix) == 1) present[norm(substr(line, length(prefix) + 1))] = 1
+            }
+            close(image_files)
+          }
+          {
+            key = $1; if (key !~ /:$/) next; sub(/:$/, "", key); key = norm(key);
+            known[key] = 1;
+            for (i = 2; i <= NF; i++) dependencies[key] = dependencies[key] " " norm($i)
+          }
+          END {
+            queue[1] = norm(root_module); last = 1;
+            for (pos = 1; pos <= last; pos++) {
+              key = queue[pos]; if (seen[key]++) continue;
+              if (!(key in known)) { print "no modules.dep entry for " key; bad = 1; continue }
+              if (!(key in owned)) { print "not owned by the kernel package: " key; bad = 1 }
+              if (!(key in present)) { print "missing from image: " key; bad = 1 }
+              n = split(dependencies[key], parts, /[[:space:]]+/);
+              for (i = 1; i <= n; i++) if (parts[i] != "") queue[++last] = parts[i]
+            }
+            exit bad ? 1 : 0
+          }' "$depfile") || fail "$image has incomplete M4 storage dependencies for $required: $detail"
       elif [[ ! -r $(path "/usr/lib/modules/$kver/modules.builtin") ]] ||
         ! module_list_has "$(path "/usr/lib/modules/$kver/modules.builtin")"; then
         fail "$kernel has no built-in or package-owned $required driver"

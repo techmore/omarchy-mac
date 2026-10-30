@@ -346,6 +346,10 @@ system() {
       for name in dm-mod dm-bufio dm-crypt dm-integrity; do
         printf '/usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name"
       done
+      printf '/usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver"
     fi
   } >"$test_tmp/files/$kernel"
   printf '/usr/lib/asahi-boot/\n%s\n%s\n' "$m1n1_src" "$uboot_src" >"$test_tmp/files/$bootloader"
@@ -358,6 +362,23 @@ system() {
     for name in dm-mod dm-bufio dm-crypt dm-integrity; do
       printf 'usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
     done
+    printf 'usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver" >>"$test_tmp/initramfs"
+    cat >"$modules/modules.dep" <<'DEPS'
+kernel/drivers/nvme/host/nvme-apple.ko: kernel/drivers/nvme/host/nvme-core.ko kernel/drivers/soc/apple/apple-sart.ko
+kernel/drivers/nvme/host/nvme-core.ko:
+kernel/drivers/soc/apple/apple-sart.ko:
+kernel/drivers/md/dm-mod.ko:
+kernel/drivers/md/dm-bufio.ko: kernel/drivers/md/dm-mod.ko
+kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko kernel/lib/crypto/libmd5.ko
+kernel/drivers/md/dm-integrity.ko: kernel/drivers/md/dm-bufio.ko kernel/crypto/async_tx/async_xor.ko
+kernel/lib/crypto/libmd5.ko:
+kernel/crypto/async_tx/async_xor.ko: kernel/crypto/async_tx/async_tx.ko kernel/lib/raid/xor/xor.ko
+kernel/crypto/async_tx/async_tx.ko:
+kernel/lib/raid/xor/xor.ko:
+DEPS
     cp "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
     printf 'fallback initramfs\n' >"$root/boot/initramfs-$kernel-fallback.img"
   fi
@@ -565,11 +586,27 @@ expect_fail "an M4 initramfs without Apple NVMe" "missing required M4 storage mo
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research
-expect_fail "an M4 initramfs without the NVMe SART dependency" "missing required M4 storage module apple-sart"
+expect_fail "an M4 initramfs without the NVMe SART dependency" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 initramfs without dm-crypt" "missing required M4 storage module dm-crypt"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/libmd5\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs missing a dm-crypt dependency" "missing from image: kernel/lib/crypto/libmd5.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/async_xor\.ko/d' "$test_tmp/files/linux-omarchy-m4-research"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel missing an owned dm-integrity dependency" "not owned by the kernel package: kernel/crypto/async_tx/async_xor.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/async_tx\.ko:/d' "$modules/modules.dep"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel with incomplete transitive dependency metadata" "no modules.dep entry for kernel/crypto/async_tx/async_tx.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+rm "$modules/modules.dep"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel without module dependency metadata" "no readable modules.dep"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i '/dm-bufio\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research
@@ -603,8 +640,16 @@ run_check linux-omarchy-m4-research
 expect_fail "built-in M4 storage drivers pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
 for file in "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"; do
+  sed -i '/dm-mod\.ko/d' "$file"
+done
+sed -i 's# kernel/drivers/md/dm-mod\.ko##g; /kernel\/drivers\/md\/dm-mod\.ko:/d' "$modules/modules.dep"
+printf 'kernel/drivers/md/dm-mod.ko\n' >>"$modules/modules.builtin"
+run_check linux-omarchy-m4-research
+expect_fail "a built-in device mapper with modular encryption drivers" "M4 GRUB default selection is not verified"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+for file in "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback" "$modules/modules.dep"; do
   sed -i -e 's/nvme-apple\.ko/nvme_apple.ko.zst/g' -e 's/nvme-core\.ko/nvme_core.ko.xz/g' \
-    -e 's/apple-sart\.ko/apple_sart.ko.gz/g' "$file"
+    -e 's/apple-sart\.ko/apple_sart.ko.gz/g' -e 's/libmd5\.ko/libmd5.ko.zst/g' "$file"
 done
 run_check linux-omarchy-m4-research
 expect_fail "compressed storage modules pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
@@ -1013,7 +1058,7 @@ expect_fail "an M4 main UKI without Apple NVMe" "the M4 default UKI is missing r
 m4_limine_system
 sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs-uki-fallback"
 run_check linux-omarchy-m4-research
-expect_fail "an M4 fallback UKI without SART" "the M4 fallback UKI is missing required M4 storage module apple-sart"
+expect_fail "an M4 fallback UKI without SART" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
 m4_limine_system
 sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs-uki"
 run_check linux-omarchy-m4-research
@@ -1022,6 +1067,10 @@ m4_limine_system
 sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-uki-fallback"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 fallback UKI without dm-integrity" "the M4 fallback UKI is missing required M4 storage module dm-integrity"
+m4_limine_system
+sed -i '/async_tx\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI missing a transitive integrity dependency" "missing from image: kernel/crypto/async_tx/async_tx.ko"
 m4_limine_system
 sed -i '/dm-mod\.ko/d' "$test_tmp/initramfs-uki-fallback"
 run_check linux-omarchy-m4-research
