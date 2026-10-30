@@ -975,6 +975,16 @@ m4_limine_system
 run_check linux-omarchy-m4-research
 expect_pass "M4 Limine UKIs with matching embedded storage drivers"
 m4_limine_system
+printf 'M1N1_UPDATE_DISABLED=1\n' >>"$root/etc/default/update-m1n1"
+run_check linux-omarchy-m4-research
+expect_fail "M4 with m1n1 updates disabled" "M1N1_UPDATE_DISABLED prevents verifying the M4 research boot chain"
+! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest an unqualified updater"
+m4_limine_system
+printf 'corruption\n' >>"$esp/m1n1/boot.bin"
+run_check linux-omarchy-m4-research
+expect_fail "M4 with a mismatched active stage 2" "does not match the M4 research chain"
+! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest rebuilding a mismatched stage 2"
+m4_limine_system
 printf 'linux-aurora\nm1n1-aurora\n' >>"$test_tmp/files/installed"
 run_check --boot-chain
 expect_pass "M4 Limine selected beside the known-good kernel"
