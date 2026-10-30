@@ -32,3 +32,5 @@ The M4 GPU, Apple display driver and Apple DPTX PHY objects compiled in a local 
 The planned Apple and Logitech keyboard, mouse and trackpad pairing experience is tracked in [the input release goal](INPUT-RELEASE-GOAL.md). It is not yet implemented or qualified on the mini.
 
 The [deeper upstream desktop audit](audits/2026-10-30-upstream-desktop.md) records the current Omarchy and Aurora branch differences, missing candidate configuration and a scheduler patch-placement conflict.
+
+The planned [Signal messaging release goal](SIGNAL-RELEASE-GOAL.md) carries forward the prior M-series desktop work and tracks ARM64 packaging and M4 qualification.
