@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pacman must abort before Asahi's post-transaction m1n1 update can run.
+echo 'M4 research packages are not qualified for installation or upgrade.' >&2
+echo 'Their m1n1, device tree, initramfs and recovery transaction is not yet safe.' >&2
+exit 1
