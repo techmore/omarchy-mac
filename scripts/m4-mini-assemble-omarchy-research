@@ -12,7 +12,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
-BOOT_COMMIT = '6bce21bfb1367f134416750f430a91c204d37831'
+BOOT_COMMIT = '1b7d1408a16051821ebd7608233a1429c222c5c1'
 UAPI_SHA = 'eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015'
 EXPECTED = {
     'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
@@ -24,8 +24,8 @@ EXPECTED = {
     'mesa-uwsm': 'f8b7f005b60bc8e29ed546b13605ac634a690992a7a0629f130cf6a5047aab54',
     'mesa-uwsm-loader': '921f6fdcd7412ab2522613c24c78838b502f4c08dd5166ac31805f1ebbdaccc4',
     'mesa-package': '2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2',
-    'initramfs-default': '9dbfa641f0b0ff908b9273dff229601f9a4287288bc4b336202558263e30e29e',
-    'initramfs-fallback': '71e65ddcf8e56cbc403a8b4012a8f0f9863f4f77bc370d570fd015f5259ea559',
+    'initramfs-default': '03d1173a0ecd17213b779e52b1b4b0a333b3341a669c209ef1c057717a2cbbe9',
+    'initramfs-fallback': 'f7a13b67f0a202ba196d8c73499b59d7566ecbb88ebaaeeb9dae3b1aea0d2862',
 }
 
 
@@ -66,6 +66,10 @@ def main():
         'recovery-capsule': ROOT / 'scripts/m4-mini-recovery-capsule',
         'boot-transition': ROOT / 'scripts/m4-mini-prepare-boot-transition',
         'efi-proposal': ROOT / 'scripts/m4-mini-prepare-efi-research',
+        'gravity-installer': ROOT / 'scripts/m4-mini-prepare-gravity-installer',
+        'gravity-image': ROOT / 'scripts/m4-mini-prepare-gravity-image',
+        'gravity-esp': ROOT / 'scripts/m4-mini-prepare-gravity-esp-template',
+        'gravity-helper': ROOT / 'm4-mini/gravity-installer/omarchy_m4.py',
     }
     if args.mesa_package is not None:
         sources['mesa-package'] = args.mesa_package
@@ -95,7 +99,8 @@ def main():
                   .replace('@UWSM_LOADER_SHA256@', EXPECTED['mesa-uwsm-loader']))
         expected = EXPECTED.copy()
         expected['mesa-recipe'] = hashlib.sha256(recipe.encode()).hexdigest()
-        for name in ('recovery-capsule', 'boot-transition', 'efi-proposal'):
+        for name in ('recovery-capsule', 'boot-transition', 'efi-proposal', 'gravity-installer',
+                     'gravity-image', 'gravity-esp', 'gravity-helper'):
             path = sources[name]
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f'{name} must be a regular local script')
@@ -169,6 +174,10 @@ def main():
             'recovery-capsule': 'scripts/m4-mini-recovery-capsule',
             'boot-transition': 'scripts/m4-mini-prepare-boot-transition',
             'efi-proposal': 'scripts/m4-mini-prepare-efi-research',
+            'gravity-installer': 'scripts/m4-mini-prepare-gravity-installer',
+            'gravity-image': 'scripts/m4-mini-prepare-gravity-image',
+            'gravity-esp': 'scripts/m4-mini-prepare-gravity-esp-template',
+            'gravity-helper': 'm4-mini/gravity-installer/omarchy_m4.py',
         }
         if args.mesa_package is not None:
             destinations['mesa-package'] = 'mesa/' + args.mesa_package.name
@@ -181,7 +190,8 @@ def main():
             destination = args.output / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(sources[name], destination)
-            if name in ('recovery-capsule', 'boot-transition', 'efi-proposal'):
+            if name in ('recovery-capsule', 'boot-transition', 'efi-proposal',
+                        'gravity-installer', 'gravity-image', 'gravity-esp'):
                 destination.chmod(0o755)
             if sha_file(destination) != expected[name]:
                 raise ValueError(f'copy verification failed: {name}')

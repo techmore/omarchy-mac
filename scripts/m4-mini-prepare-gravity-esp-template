@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Build M4 UKIs for a fresh Gravity-format install, without an existing ESP."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import runpy
+import shutil
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
+PACKAGE_SHA = 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d'
+KERNEL_SHA = '539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833'
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('bundle', 'root-image', 'cmdline', 'os-release', 'initramfs-default', 'initramfs-fallback', 'output'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--limine-efi', type=Path, default=Path('/usr/share/limine/BOOTAA64.EFI'))
+    parser.add_argument('--uefi-stub', type=Path, default=Path('/usr/lib/systemd/boot/efi/linuxaa64.efi.stub'))
+    parser.add_argument('--ukify', default='/usr/lib/systemd/ukify')
+    args = parser.parse_args()
+    try:
+        efi = runpy.run_path(str(ROOT / 'scripts/m4-mini-prepare-efi-research'))
+        m4 = runpy.run_path(str(ROOT / 'm4-mini/gravity-installer/omarchy_m4.py'))
+        if args.bundle.is_symlink() or not args.bundle.is_dir():
+            raise ValueError('bundle must be an unlinked directory')
+        bundle = args.bundle.resolve(strict=True)
+        root, cmdline, os_release, default, fallback, loader, stub = map(efi['regular'], (
+            args.root_image, args.cmdline, args.os_release, args.initramfs_default,
+            args.initramfs_fallback, args.limine_efi, args.uefi_stub))
+        if root.stat().st_size < 4096 or root.stat().st_size % 4096:
+            raise ValueError('root image must be 4 KiB aligned')
+        with root.open('rb') as f:
+            root_kind, root_uuid = m4['filesystem_identity'](f.read(0x10080))
+        command = cmdline.read_text(encoding='ascii').strip()
+        if not command or any(ord(c) < 32 or ord(c) > 126 for c in command):
+            raise ValueError('kernel command line must be one printable ASCII line')
+        words = command.split()
+        m4['check_root_cmdline'](words, root_kind, root_uuid)
+        if digest(default) == digest(fallback):
+            raise ValueError('default and fallback initramfs must be distinct')
+        efi['aarch64_pe'](loader)
+        efi['aarch64_pe'](stub)
+        package = efi['regular'](bundle / 'kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz')
+        if digest(package) != PACKAGE_SHA:
+            raise ValueError('kernel package does not match the locked M4 build')
+        prefix = f'usr/lib/modules/{KVER}/'
+        with tarfile.open(package, 'r:*') as archive:
+            names = {m.name: m for m in archive.getmembers() if m.isfile()}
+            kernel = archive.extractfile(names[prefix + 'vmlinuz']).read()
+            if hashlib.sha256(kernel).hexdigest() != KERNEL_SHA:
+                raise ValueError('kernel image does not match the M4 build')
+            modules = {name[len(prefix):] for name in names if name.startswith(prefix) and name.endswith('.ko')}
+            builtins = {efi['module_name'](line) for line in archive.extractfile(names[prefix + 'modules.builtin']).read().decode().splitlines()}
+            dependencies = {}
+            for line in archive.extractfile(names[prefix + 'modules.dep']).read().decode().splitlines():
+                key, values = line.split(':', 1)
+                dependencies[key] = values.split()
+        for image in (default, fallback):
+            efi['check_initramfs'](image, modules, dependencies, builtins)
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('output must be a new directory')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        filesystem = subprocess.check_output(['findmnt', '-n', '-T', str(output.parent), '-o', 'FSTYPE'], text=True).strip().lower()
+        if not filesystem or filesystem in ('vfat', 'fat', 'msdos', 'exfat'):
+            raise ValueError('output must be on a staging filesystem, not an EFI partition')
+        if any(output == p or output in p.parents or p in output.parents
+               for p in (bundle, root, cmdline, os_release, default, fallback, loader, stub)):
+            raise ValueError('output must be separate from all inputs')
+        output.mkdir(mode=0o700)
+        (output / 'INCOMPLETE').write_text('Incomplete EFI template; do not use.\n')
+        (output / 'EFI/BOOT').mkdir(parents=True)
+        (output / 'EFI/Linux').mkdir(parents=True)
+        shutil.copyfile(loader, output / 'EFI/BOOT/BOOTAA64.EFI')
+        (output / 'limine.conf').write_bytes(m4['MENU'])
+        kernel_path = output / 'kernel-image'
+        kernel_path.write_bytes(kernel)
+        for kind, image in (('default', default), ('fallback', fallback)):
+            suffix = '' if kind == 'default' else '-fallback'
+            target = output / f'EFI/Linux/omarchy_linux-omarchy-m4-research{suffix}.efi'
+            subprocess.run([args.ukify, 'build', '--config=/dev/null', f'--linux={kernel_path}', f'--initrd={image}',
+                            f'--cmdline=@{cmdline}', f'--os-release=@{os_release}', f'--stub={stub}',
+                            '--efi-arch=aa64', f'--uname={KVER}', f'--output={target}'], check=True)
+            efi['aarch64_pe'](target)
+            inspected = json.loads(subprocess.check_output([args.ukify, 'inspect', str(target), '--json=short'], text=True))
+            if (inspected['.linux']['sha256'] != KERNEL_SHA or inspected['.initrd']['sha256'] != digest(image)
+                    or inspected['.cmdline']['text'].strip() != command):
+                raise ValueError(f'{kind} UKI does not match its inputs')
+        kernel_path.unlink()
+        receipt = {'scope': 'offline fresh-install EFI template; no ESP or Apple boot object created',
+                   'root_uuid': root_uuid, 'root_filesystem': root_kind, 'default_initramfs_sha256': digest(default),
+                   'fallback_initramfs_sha256': digest(fallback), 'hardware_validated': False,
+                   'files': {name: digest(output / name) for name in (
+                       'EFI/BOOT/BOOTAA64.EFI', 'limine.conf',
+                       'EFI/Linux/omarchy_linux-omarchy-m4-research.efi',
+                       'EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi')},
+                   'ready_for_installation': False,
+                   'limitations': ['target-specific root contents and initramfs are not qualified',
+                                   'no live device firmware, recovery restore, M4 boot or HDMI validation']}
+        (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        (output / 'INCOMPLETE').unlink()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-prepare-gravity-esp-template: {error}', file=sys.stderr)
+        return 1
+    print('Prepared a fresh-install M4 EFI template locally; no ESP was modified.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

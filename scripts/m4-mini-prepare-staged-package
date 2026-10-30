@@ -19,10 +19,16 @@ LOCKED = {
     'bootloader/boot-sample.bin': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
     'bootloader/m1n1-stage1.bin': 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab',
     'mesa/mesa-omarchy-m4-research-26.3.0.r1-2-aarch64.pkg.tar.xz': '2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2',
-    'omarchy-mac-boot-source.tar.gz': '6eb324a7423254820dcbbccd45be08f607af39c6b0398e696f8d9a1e3169a0f1',
-    'scripts/m4-mini-prepare-boot-transition': 'e626e4dda12fc73d7a7b274841f189770f276c45ff281dca71cd6b36502cab30',
-    'scripts/m4-mini-prepare-efi-research': 'a5714325925bd5ef6f26e93abe176339c0a22b9aad2a3b2a72a9b8ae6c1c177e',
+    'initramfs/default.img': '03d1173a0ecd17213b779e52b1b4b0a333b3341a669c209ef1c057717a2cbbe9',
+    'initramfs/fallback.img': 'f7a13b67f0a202ba196d8c73499b59d7566ecbb88ebaaeeb9dae3b1aea0d2862',
+    'omarchy-mac-boot-source.tar.gz': '2b8fc25b9e1c63cfed19f816d899409c9b2fd4f1a09fe7bfa5f9120fa96635e8',
+    'scripts/m4-mini-prepare-boot-transition': '18926dd15aeab13ab2d4d285adf60ac3cabf0394bb569e7f5cdd9de00884a766',
+    'scripts/m4-mini-prepare-efi-research': 'd430ff8e2d0582a87001a3c011d7c2f00c8cb759fcfa7e03ee336cd060f2e89c',
     'scripts/m4-mini-recovery-capsule': '1f10305b4f7666e8d0a01b6c4ea8f1430384e39b68358093d5d0b7439a1bdd46',
+    'scripts/m4-mini-prepare-gravity-installer': 'a7c5d6211a8b36125875d78206d10377242d78d878274024072ebe5bd6e660b0',
+    'scripts/m4-mini-prepare-gravity-image': '78b1a8872c916610c33576558cbebd6322183cb802637f31caa63011b444ec4e',
+    'scripts/m4-mini-prepare-gravity-esp-template': '565ad15dc4e65d03bf43014727d0c5a425a9ea7f37e4963adc2d9bbf605c8c3c',
+    'm4-mini/gravity-installer/omarchy_m4.py': 'a40088b29d0e25a6a07239d9c38319eea36c93919bb6b2849077292cff979d38',
 }
 
 

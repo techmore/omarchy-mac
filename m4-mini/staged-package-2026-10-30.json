@@ -1,14 +1,19 @@
 {
   "scope": "staging-only M4 artifact package and disposable Arch ARM hook check",
-  "package": "omarchy-m4-staged-research-7.1.13.r7.rootfix-5-aarch64.pkg.tar.gz",
-  "package_sha256": "a753bc48581de7fb89cae5f0e1b9a7557c5ab14123c6082ccfcd1dc7cf49056d",
-  "pkgbuild_sha256": "46cee61c549e51d49883e7f18e411eb362b7bdf736f870cd4711eb965cafd38f",
-  "source_sha256": "f688fdf5d863044c13aa1bb472f26b17f836cb7d772a7a9880804b61187ffcb4",
-  "input_bundle_manifest_sha256": "b93a80c19ca0c1a336cdf81c3bac2eb8b0ad7c0246f29f14f3c08ca8fc3f1da0",
-  "contents": "Nested kernel, loader and Mesa packages, unsigned stage one, sample stage two, Omarchy boot source, and offline recovery tools are files under /usr/share/omarchy-m4-research/bundle. No nested package is installed by this package.",
+  "package": "omarchy-m4-staged-research-7.1.13.r7.rootfix-9-aarch64.pkg.tar.gz",
+  "package_sha256": "5ca64f3b6f7193cb12cb83d71c4840af942c1ef7a2c696c2d65994d4cfebbcbf",
+  "pkgbuild_sha256": "f5718d3ce6980dad6cfe19a0c304dd5e8e73c7c4fa175113d9ba7ed5d19d4ae3",
+  "source_sha256": "1c21c762b4c60e2526a41fc7453f4634b9e1fb4d2ab18eb6fa1000269a412e12",
+  "input_bundle_manifest_sha256": "a959728bd3574e648cc61cc1e7a2ff8aeb9eabdf03bc73a9f5512cfb6e02ea6e",
+  "contents": "Nested kernel, loader and Mesa packages, generic default and fallback initramfs, unsigned stage one, sample stage two, Omarchy boot source, and offline recovery and Gravity installer adaptation tools are files under /usr/share/omarchy-m4-research/bundle. No nested package is installed by this package.",
   "build_environment": "Local Ubuntu ARM64 VM using makepkg; no dependency resolution for this file-only package",
-  "check": "A real pacman fresh-install transaction in a disposable Arch ARM overlay with dependency checks disabled installed staging release 5. The existing Asahi hook used a recording updater; it was not invoked, and the fixture's loader file was unchanged. Outer paths and nested artifact hashes were checked.",
-  "transaction_log_sha256": "68cfecb9e4dc02895b86fa24d112d4b817e307b7d87fbbbeaaf4173cbab32fce",
-  "limitations": ["unsigned research package", "only a fresh staging transaction was checked", "no production dependency resolution, future hooks or Gravity-side updater protection", "staging does not activate the kernel or prepare a qualified recovery", "no M4 hardware or HDMI validation"],
+  "check": "Release 9 was built locally with makepkg and source checksum verification. The earlier release 5 passed a fresh-install pacman transaction in a disposable Arch ARM overlay with dependency checks disabled; its recording updater was not invoked. Release 9 has not had a separate transaction check.",
+  "limitations": [
+    "unsigned research package",
+    "only a fresh staging transaction was checked",
+    "no production dependency resolution, future hooks or Gravity-side updater protection",
+    "staging does not activate the kernel or prepare a qualified recovery",
+    "no M4 hardware or HDMI validation"
+  ],
   "hardware_validated": false
 }
