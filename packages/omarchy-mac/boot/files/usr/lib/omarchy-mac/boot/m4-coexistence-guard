@@ -1,0 +1,16 @@
+#!/bin/sh
+# Other packages can trigger update-m1n1 even when the M4 package is unchanged.
+packages=$(pacman -Qq) || {
+  echo 'Cannot check installed packages before the m1n1 transaction.' >&2
+  exit 1
+}
+if printf '%s\n' "$packages" | grep -Eq '^(linux-omarchy-m4-research|m1n1-omarchy-m4-research)$'; then
+  echo 'An unqualified M4 research package is installed; refusing the m1n1 transaction.' >&2
+  exit 1
+else
+  status=$?
+  [ "$status" -eq 1 ] || {
+    echo 'Cannot inspect installed packages before the m1n1 transaction.' >&2
+    exit 1
+  }
+fi

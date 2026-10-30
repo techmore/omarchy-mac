@@ -1,0 +1,58 @@
+{
+  "scope": "source comparison and isolated object builds; no full combined build, target installation or hardware test",
+  "heads": {
+    "omarchy_quattro": "ba546a61f881c1fe9d79d75ec050eab048b8cb63",
+    "omarchy_quattro_upstream": "a76179cdcf1e844251eecac2708b687c486aa497",
+    "omacom_aurora": "aa64d8fa73ded0573a227662d295c4f2cb64a343",
+    "aurora_silicon": "23827fe87f4ffbabf5b7907a5907f9316286ce55",
+    "gravity_kernel": "4fc326f6c25ccceb7515e2635c22e01fde5d3bac",
+    "gravity_packages": "711c2a110416d28010ccdd118b83111776bff207",
+    "gravity_mesa": "87ac51d411f0e58a9433567ec2666f457be89e1d",
+    "gravity_bootloader_head": "f02d4a52017915febb222539636b5b025a70407a",
+    "gravity_installer_head": "6420623289fe7544cb8589b658355e57f0290fcc",
+    "gravity_uboot_branch": "a2f6913694ff26908c16948af3f8372429782263",
+    "candidate": "6363990c4a4535b36dccd6c9a972e124861274fa",
+    "mseries_recipe": "c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c"
+  },
+  "mesa_and_candidate_kernel_uapi_sha256": "eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015",
+  "candidate_config_sha256": "e2ff7cabcf8f56abfc659d457a4b6bfdd7b2b358e3c7ea700dbbc0f0501a2710",
+  "candidate_config_findings": {
+    "CONFIG_AQTION": "disabled",
+    "CONFIG_TIGON3": "disabled",
+    "CONFIG_APPLE_WATCHDOG": "m",
+    "CONFIG_DRM_APPLE": "m",
+    "CONFIG_DRM_ASAHI_M4": "m",
+    "CONFIG_PHY_APPLE_DPTX": "m"
+  },
+  "compatibility_replay": {
+    "patch_manifest_url": "https://github.com/techmore/ElementaryOS_MSeries/blob/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/m4-mini/gravity/compatibility/manifest.json",
+    "method": "Extract patch input files from exact candidate Git blobs; replay all ten patches in order with patch --batch --fuzz=0 -p1 in a scratch tree; compare recorded R7 result hashes and inspect g16_drm.rs placement.",
+    "patch_exit_status": "all ten zero",
+    "recorded_r7_result_files": "17 of 18 hash-identical before correction",
+    "invalid_g16_sha256": "0e31e7d496b6abf055b1cd440bc87c42c01b9622338094f0a5770d012a7f1ac9",
+    "problem": "context-free 0004/0005 insertions land before, rather than inside, the SubmissionJob trait impl after existing patch 0066 changes line numbers",
+    "correction": "move the misplaced timeout type/method and module/retention constants together immediately inside impl sched::JobImpl for SubmissionJob; compare to clean R7 replay",
+    "corrected_g16_sha256": "b488b1520e3eae3b6e1161eec4e9dd64f4b233bd2a54c73044602a362c290554",
+    "remaining_g16_difference_from_clean_r7": "existing candidate patch 0066 notification-timeout changes",
+    "not_promoted": true
+  },
+  "isolated_object_build": {
+    "environment": "Ubuntu 24.04 ARM64 local VM, clang 18.1.3, GNU ld, rustc 1.99.0, bindgen 0.71.1",
+    "config_sha256": "e2ff7cabcf8f56abfc659d457a4b6bfdd7b2b358e3c7ea700dbbc0f0501a2710",
+    "result": "all four named object targets compiled; M4 Rust object emitted unused/deprecated warnings",
+    "object_sha256": {
+      "drivers/gpu/drm/asahi/asahi_m4.o": "e5277b4095305d415942ba4ff0a04d77b722dc93191a3b25063598592774840e",
+      "arch/arm64/kernel/idle-apple.o": "255ec7962f282c8ea777775575051ced145fdda7eb086f7c8614a2daddd3a4cf",
+      "arch/arm64/kernel/smp.o": "2c074c60660adc25cefcb8d77343dba21f6febd3e701c16562e9c3881601b27a",
+      "drivers/bluetooth/hci_bcm4377.o": "abadb91b8268d81735a320c4127b04f0df2b32c506884fb8ae049331d1542056"
+    }
+  },
+  "not_verified": [
+    "full combined kernel or module link",
+    "KUnit after combination",
+    "native GPU and HDMI",
+    "wireless hardware identity and pairing",
+    "loader firmware handoff",
+    "reboot and recovery"
+  ]
+}

@@ -36,6 +36,22 @@ omarchy-hw-apple-silicon || return 0
   findmnt -no TARGET "$esp" >/dev/null 2>&1 || limine_boot_fail "the ESP is not mounted at $esp"
   # This path is written to a configuration sourced by root.
   [[ $esp =~ ^/[a-zA-Z0-9_./-]+$ ]] || limine_boot_fail "invalid ESP path"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    # Do not touch an M4 loader until the mounted ESP is the booted system's
+    # ESP and prior stage-two bytes have been saved there. This is only one
+    # input to manual recovery; it does not prove the old chain is bootable.
+    system_esp=$(sudo omarchy-mac-esp) || limine_boot_fail "cannot identify the system ESP"
+    [[ $system_esp == "$esp" ]] || limine_boot_fail "the configured ESP is not the system ESP"
+    recovery="$esp/m1n1/boot.omarchy-m4-recovery.bin"
+    recovery_hash="$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+    sudo test -s "$esp/m1n1/boot.bin" && sudo test -s "$recovery" && sudo test -f "$recovery_hash" &&
+      ! sudo test -L "$recovery" && ! sudo test -L "$recovery_hash" ||
+      limine_boot_fail "the M4 chain has no saved prior stage two and SHA-256 record"
+    expected_recovery=$(sudo cat "$recovery_hash") || limine_boot_fail "cannot read the M4 recovery hash"
+    [[ $expected_recovery =~ ^[0-9a-f]{64}$ ]] &&
+      [[ $(sudo sha256sum "$recovery" | cut -d' ' -f1) == "$expected_recovery" ]] ||
+      limine_boot_fail "the saved M4 stage two does not match its SHA-256 record"
+  fi
 
   limine_backup=$(mktemp -d) || exit 1
   limine_managed=("$limine_default" "$esp/limine.conf" "$esp/EFI/Linux"
@@ -112,6 +128,10 @@ KERNEL_CMDLINE[default]=""
 CONF
   printf 'ESP_PATH="%s"\nBOOT_ORDER="%s, *, *fallback, Snapshots"\n' "$esp" "$kernel" |
     sudo tee -a "$limine_default" >/dev/null || limine_boot_fail "cannot finish Limine defaults"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    printf 'MKINITCPIO_FALLBACK="%s"\n' "$kernel" | sudo tee -a "$limine_default" >/dev/null ||
+      limine_boot_fail "cannot enable the M4 fallback UKI"
+  fi
   sudo install -d "$boot_hooks_dir" || limine_boot_fail "cannot create the command-line hook directory"
   cmdline_command=$(command -v omarchy-mac-limine-cmdline) || limine_boot_fail "the command-line helper is missing"
   sudo ln -sfn "$cmdline_command" "$boot_hooks_dir/20-omarchy-mac-cmdline" || limine_boot_fail "cannot install the command-line hook"
@@ -130,7 +150,21 @@ CONF
     done
   fi
   if (( ! menu_is_ours )); then
+    # Preserve a pre-existing GRUB recovery entry when replacing a foreign
+    # menu in the research lane. This does not make it a tested recovery path.
+    if [[ $kernel == "linux-omarchy-m4-research" ]] && sudo test -f "$esp/limine.conf"; then
+      sudo awk '
+        /^\/GRUB \(recovery\)$/ { keep = 1; print; next }
+        keep && /^[[:space:]]/ { print; next }
+        keep && /^[[:space:]]*$/ { print; next }
+        keep { exit }
+      ' "$esp/limine.conf" >"$limine_backup/grub-recovery" || limine_boot_fail "cannot save the old recovery entry"
+    fi
     sudo install -m600 "$limine_conf_source" "$esp/limine.conf" || limine_boot_fail "cannot install the Limine menu"
+    if [[ -s $limine_backup/grub-recovery ]]; then
+      sudo cat "$limine_backup/grub-recovery" | sudo tee -a "$esp/limine.conf" >/dev/null ||
+        limine_boot_fail "cannot preserve the old recovery entry"
+    fi
   fi
   sudo sed -i -E 's/^#?[[:space:]]*timeout:.*/timeout: 3/' "$esp/limine.conf" || limine_boot_fail "cannot set the menu timeout"
   if ! sudo grep -Eq '^timeout: ' "$esp/limine.conf"; then
@@ -141,12 +175,18 @@ CONF
     sudo test -s "$esp/EFI/Linux/omarchy_$kernel.efi" && sudo grep -Fq "//$kernel" "$esp/limine.conf" &&
       sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel.efi" "$esp/limine.conf"
   }
+  m4_has_fallback() {
+    sudo test -s "$esp/EFI/Linux/omarchy_$kernel-fallback.efi" &&
+      sudo grep -Fq "//$kernel-fallback" "$esp/limine.conf" &&
+      sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel-fallback.efi" "$esp/limine.conf"
+  }
 
   # Deferred hardware setup (a fresh image's first boot) rebuilds the boot
   # image after its last step. A menu that already boots the UKI keeps booting
   # it until then, so the build is left to that rebuild: one per first boot.
   rebuild_request=${OMARCHY_IMAGE_BOOT_REBUILD:-}
-  if [[ -n $rebuild_request ]] && (( menu_is_ours )) && limine_boots_uki; then
+  if [[ -n $rebuild_request ]] && (( menu_is_ours )) && limine_boots_uki &&
+    { [[ $kernel != "linux-omarchy-m4-research" ]] || m4_has_fallback; }; then
     echo "Leaving the Omarchy UKI build to the end of the hardware setup"
     sudo touch "$rebuild_request" && sudo sync "$rebuild_request" "$(dirname "$rebuild_request")" ||
       limine_boot_fail "cannot request the UKI build"
@@ -157,8 +197,13 @@ CONF
     sudo grep -Fq "//$kernel" "$esp/limine.conf" || limine_boot_fail "limine.conf has no $kernel entry"
     sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel.efi" "$esp/limine.conf" || limine_boot_fail "limine.conf does not reference the $kernel UKI"
   fi
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    m4_has_fallback || limine_boot_fail "limine-update built no M4 fallback UKI and menu entry"
+    sudo omarchy-mac-m4-limine-menu-check "$esp/limine.conf" "$kernel" ||
+      limine_boot_fail "the Limine default does not select the M4 research kernel"
+  fi
 
-  if sudo grep -Fq '/GRUB (recovery)' "$esp/limine.conf"; then
+  if [[ $kernel != "linux-omarchy-m4-research" ]] && sudo grep -Fq '/GRUB (recovery)' "$esp/limine.conf"; then
     sudo awk '
       /^\/GRUB \(recovery\)$/ { skip = 1; next }
       skip && /^[[:space:]]/ { next }
@@ -197,7 +242,9 @@ HOOK
   sudo limine-snapper-sync || echo "limine-snapper-sync did not finish; snapshot entries come with the next snapshot" >&2
   sudo systemctl enable --now limine-snapper-sync.service >/dev/null 2>&1 || true
   sudo rm -rf "$esp/limine" || true
-  sudo rm -f "$esp/EFI/BOOT/grub-aa64.efi" || true
+  if [[ $kernel != "linux-omarchy-m4-research" ]]; then
+    sudo rm -f "$esp/EFI/BOOT/grub-aa64.efi" || true
+  fi
   if [[ -f $systemd_dir/omarchy-mac-boot-sync.service ]]; then
     sudo systemctl disable omarchy-mac-boot-sync.service >/dev/null 2>&1 || true
     sudo rm -f "$systemd_dir/omarchy-mac-boot-sync.service" || true

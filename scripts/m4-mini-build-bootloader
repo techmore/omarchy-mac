@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Build isolated Gravity M4 bootloader stages; never install or select them.
+
+Adapted from ElementaryOS_MSeries/mseries/m4-mini/build-bootloader.py.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+COMMIT = 'f02d4a52017915febb222539636b5b025a70407a'
+ARTWORK = 'e613a87e526f8fec439c4129e69dd2821b38d258'
+
+
+def git(source, *args):
+    return subprocess.check_output(['git', '-C', str(source), *args], text=True).strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source', type=Path, required=True, help='fresh bootloader checkout with artwork submodule')
+    parser.add_argument('--output', type=Path, required=True, help='new directory outside the checkout')
+    parser.add_argument('--cargo-home', type=Path, required=True)
+    parser.add_argument('--jobs', type=int, default=2)
+    args = parser.parse_args()
+    source = args.source.resolve()
+    output = args.output.resolve()
+    if args.jobs < 1 or output.exists() or output == source or source in output.parents:
+        raise ValueError('positive jobs and a new output outside the source tree are required')
+    if git(source, 'rev-parse', 'HEAD') != COMMIT or git(source / 'artwork', 'rev-parse', 'HEAD') != ARTWORK:
+        raise ValueError('bootloader or artwork source commit mismatch')
+    if git(source, 'status', '--porcelain', '--ignored', '--untracked-files=normal'):
+        raise ValueError('fresh bootloader checkout required; build directory must not already exist')
+    output.mkdir()
+    marker = output / 'INCOMPLETE'
+    marker.touch()
+    env = dict(os.environ, CARGO_HOME=str(args.cargo_home.resolve()), M1N1_VERSION_TAG=COMMIT[:7])
+    artifacts = {}
+    commands = []
+    for stage, chainloading in ((2, 0), (1, 1)):
+        if stage == 1:
+            # make does not reliably re-evaluate build_cfg.h merely because a
+            # command-line option changed; delete only this run's build output.
+            clean = ['make', '-C', str(source), 'clean']
+            subprocess.run(clean, env=env, check=True)
+            commands.append(clean)
+        command = ['make', '-C', str(source), 'ARCH=', 'RELEASE=1', 'LOGO=', 'NO_DISPLAY=1',
+                   f'CHAINLOADING={chainloading}', f'-j{args.jobs}']
+        commands.append(command)
+        with (output / f'stage{stage}.log').open('wb') as log:
+            subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+        config = (source / 'build/build_cfg.h').read_text()
+        lines = config.splitlines()
+        if '#define NO_DISPLAY' not in lines or ('#define CHAINLOADING' in lines) != bool(chainloading):
+            raise ValueError(f'bootloader stage {stage} configuration mismatch')
+        (output / f'stage{stage}-build_cfg.h').write_text(config)
+        target = output / f'm1n1-stage{stage}.bin'
+        shutil.copy2(source / 'build/m1n1.bin', target)
+        artifacts[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    if artifacts['m1n1-stage1.bin'] == artifacts['m1n1-stage2.bin']:
+        raise ValueError('bootloader stage binaries unexpectedly match')
+    receipt = {'repository': 'GravityLinux/bootloader', 'commit': COMMIT, 'artwork_commit': ARTWORK,
+               'commands': commands, 'artifacts': artifacts, 'build_tag': COMMIT[:7],
+               'm4_bringup': 'NO_DISPLAY=1 for both stages; preserve firmware framebuffer',
+               'status': 'source build only; no firmware handoff, installation or hardware test'}
+    (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    marker.unlink()
+    print('Both M4 bootloader stages built; neither was installed.')
+
+
+if __name__ == '__main__':
+    main()

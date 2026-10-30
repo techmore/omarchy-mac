@@ -1,0 +1,13 @@
+{
+  "scope": "two local ARM64 bootloader source builds only; not installation or hardware qualification",
+  "repository": "https://github.com/techmore/bootloader",
+  "upstream_commit": "f02d4a52017915febb222539636b5b025a70407a",
+  "artwork_commit": "e613a87e526f8fec439c4129e69dd2821b38d258",
+  "toolchain": "Ubuntu 24.04 ARM64 local VM; GCC 13.3.0, GNU ld 2.42, rustc 1.99.0; aarch64-unknown-none-softfloat",
+  "configuration": "RELEASE=1 LOGO= NO_DISPLAY=1; CHAINLOADING=0 for stage 2 and CHAINLOADING=1 for stage 1",
+  "stage2_sha256": "64fb396792a8b834242e7a5087b94604fa03ab014ce483e9bfd89ef57c67b415",
+  "stage1_sha256": "ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab",
+  "verification": "Both build_cfg.h files contain NO_DISPLAY; only stage 1 contains CHAINLOADING. The two stages differ, and the corrected builder produced byte-identical outputs in a second fresh checkout. A third fresh checkout reproduced both hashes and verified the m4_bringup receipt field required by the M-series boot-chain assembler. Existing source build data and in-source output were rejected.",
+  "initial_failure": "The earlier Elementary wrapper reused stage 2 output when switching make variables; its configuration guard failed. The corrected builder runs make clean on its own newly generated build directory between stages.",
+  "limitations": ["Gravity package manifest pins a different bootloader commit", "no U-Boot or DTB assembly", "no installation", "no firmware handoff", "no physical boot or HDMI test"]
+}

@@ -1,0 +1,32 @@
+{
+  "scope": "local Gravity-derived installer and M4 EFI integration fixture; no Apple hardware",
+  "gravity_installer_commit": "6420623289fe7544cb8589b658355e57f0290fcc",
+  "omarchy_mac_image_builder_examined": "982094e15eeeae09682a3da5375fb547c0021fba",
+  "image_fixture": "m4-gravity-btrfs-fixture-v2/omarchy-m4-research.zip",
+  "image_fixture_sha256": "491c9c9efb20fa16aadd27120793589d0acf262b3a68ae9fa1e8b1bba1246a2f",
+  "root_fixture": "empty Btrfs filesystem with a synthetic UUID and no Omarchy installation",
+  "boot_fixture": "empty ext4 filesystem with a synthetic UUID",
+  "default_uki_sha256": "2e8cdc67671de17887e100a5bdff063b6b6e41dbed92d1ce8d54cd9bf5d6edf7",
+  "fallback_uki_sha256": "58872aebc887ea890a407774a74a76a7e7dda00f9656f8070f07ab69b7ff24be",
+  "tool_sha256": {
+    "scripts/m4-mini-prepare-gravity-installer": "a7c5d6211a8b36125875d78206d10377242d78d878274024072ebe5bd6e660b0",
+    "scripts/m4-mini-prepare-gravity-esp-template": "565ad15dc4e65d03bf43014727d0c5a425a9ea7f37e4963adc2d9bbf605c8c3c",
+    "scripts/m4-mini-prepare-gravity-image": "78b1a8872c916610c33576558cbebd6322183cb802637f31caa63011b444ec4e",
+    "m4-mini/gravity-installer/omarchy_m4.py": "a40088b29d0e25a6a07239d9c38319eea36c93919bb6b2849077292cff979d38"
+  },
+  "checks": [
+    "real Btrfs and ext4 filesystem headers and UUIDs match the generated metadata and UKI command lines",
+    "default and fallback UKIs include the locked M4 kernel and Btrfs, storage and display module closures",
+    "the adapter binds both stage-one and stage-two EFI identifiers to the new synthetic ESP",
+    "a Gravity recovery capsule and live EFI stage-two hash are checked before the free-space path",
+    "the Omarchy template refuses whole-disk wipe and reuse of an existing boot container",
+    "installer boot phase exercised against a temporary directory with synthetic firmware; no device was used"
+  ],
+  "limitations": [
+    "the root and boot fixture filesystems are empty, so the image cannot boot a desktop",
+    "a complete Omarchy root and matched M4 packages have not been built",
+    "Gravity on the target has not been captured or restored",
+    "no Apple boot entry, firmware handoff, M4 boot or HDMI test has been performed"
+  ],
+  "hardware_validated": false
+}

@@ -17,7 +17,18 @@ set -euo pipefail
 conf=${OMARCHY_MKINITCPIO_CONF:-/etc/mkinitcpio.conf}
 conf_dir=${OMARCHY_MKINITCPIO_CONF_DIR:-$conf.d}
 preset_dir=${OMARCHY_MKINITCPIO_PRESET_DIR:-/etc/mkinitcpio.d}
-kernel=${OMARCHY_MKINITCPIO_KERNEL:-$(omarchy-mac-kernel 2>/dev/null || echo linux-asahi)}
+if [[ -n ${OMARCHY_MKINITCPIO_KERNEL:-} ]]; then
+  kernel=$OMARCHY_MKINITCPIO_KERNEL
+else
+  kernel=$(omarchy-mac-kernel) || {
+    echo "Cannot identify the kernel whose initramfs hooks should be inspected" >&2
+    exit 1
+  }
+fi
+[[ $kernel =~ ^linux-[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || {
+  echo "Invalid kernel package name for initramfs hook inspection" >&2
+  exit 1
+}
 
 drop_ins=1
 add_hooks=() skip_hooks=()

@@ -1,0 +1,18 @@
+# Packages the research artifacts without installing their nested packages.
+pkgname=omarchy-m4-staged-research
+pkgver=7.1.13.r7.rootfix
+pkgrel=9
+pkgdesc='Unqualified M4 research artifacts staged away from active boot paths'
+arch=('aarch64')
+url='https://github.com/omacom/omarchy-mac'
+license=('custom')
+depends=('python')
+optdepends=('mkinitcpio: inspect initramfs images' 'systemd-ukify: assemble UKIs' 'limine: supply the EFI loader')
+source=('m4-staged-artifacts.tar.gz')
+sha256sums=('@SOURCE_SHA256@')
+
+package() {
+  local destination="$pkgdir/usr/share/omarchy-m4-research/bundle"
+  install -dm755 "$destination"
+  cp -a "$srcdir/bundle/." "$destination/"
+}

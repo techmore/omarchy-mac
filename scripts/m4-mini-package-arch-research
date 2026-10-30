@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Build an unqualified package from an already staged local kernel; never install it.
+set -euo pipefail
+rootfix=0
+if [[ ${1:-} == --rootfix ]]; then
+  rootfix=1
+  shift
+fi
+if (( $# != 2 )); then
+  echo "Usage: $0 [--rootfix] STAGED_KERNEL_TREE NEW_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+stage=$(realpath "$1")
+output=$(realpath -m -- "$2")
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+template="$script_dir/../m4-mini/arch-research/PKGBUILD.in"
+preset="$script_dir/../m4-mini/arch-research/linux-omarchy-m4-research.preset"
+release=7.1.13-omarchy-m4-r7-ARCH
+config_sha=9e0bd682fc678215daf71a3ab2c68616b2b75b2e9baa5f24b2ccd578dd3dec6f
+if (( rootfix )); then
+  template="$script_dir/../m4-mini/arch-research/PKGBUILD-rootfix.in"
+  release=7.1.13-omarchy-m4-r7-rootfix-ARCH
+  config_sha=b45421f50feb6a6114d0f1bb694ccc6fbb1763780e9a715291ae1cc584d949fa
+fi
+[[ ! -e $output && ! -L $output ]] || { echo 'New output directory required' >&2; exit 1; }
+case "$output/" in "$stage/"*) echo 'Output must be outside the staging tree' >&2; exit 1;; esac
+(( $(id -u) != 0 )) || { echo 'Run makepkg as an unprivileged user' >&2; exit 1; }
+python3 - "$stage" "$release" "$config_sha" "$rootfix" <<'PY'
+import hashlib, json, subprocess, sys
+from pathlib import Path
+root, release, config_sha, rootfix = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] == '1'
+if (root / 'INCOMPLETE').exists():
+    raise SystemExit('incomplete staging tree')
+r = json.loads((root / 'receipt.json').read_text())
+if (r.get('kernel_commit') != 'f46fde727002de82666741306b4e7c322fe3f0d9'
+        or r.get('release') != release or r.get('hardware_validated') is not False):
+    raise SystemExit('unexpected staging receipt')
+base = root / 'usr/lib/modules' / release
+for path in (root / 'usr').rglob('*'):
+    if path.is_symlink() or not (path.is_dir() or path.is_file()):
+        raise SystemExit('links and special files are not allowed in the staged tree')
+    if path.is_file() and not path.is_relative_to(base):
+        raise SystemExit('unexpected file outside the research kernel directory')
+for name in ('vmlinuz', 'config', 'pkgbase', 'dtbs/apple/t8132-j773g.dtb', 'modules.dep'):
+    if hashlib.sha256((base / name).read_bytes()).hexdigest() != r['files_sha256'][name]:
+        raise SystemExit('staged file hash mismatch: ' + name)
+if (base / 'pkgbase').read_text().strip() != 'linux-omarchy-m4-research':
+    raise SystemExit('unexpected package base')
+if hashlib.sha256((base / 'config').read_bytes()).hexdigest() != config_sha:
+    raise SystemExit('unexpected research kernel configuration')
+if ('Linux version ' + release + ' ').encode() not in (base / 'vmlinuz').read_bytes():
+    raise SystemExit('kernel Image release mismatch')
+order = (base / 'modules.order').read_text().splitlines()
+if (len(order) != r['module_count'] or len(set(order)) != len(order)
+        or any(not item.startswith('kernel/') or '..' in Path(item).parts
+               or not (base / item).is_file() for item in order)):
+    raise SystemExit('staged modules do not match modules.order')
+if len(list((base / 'kernel').rglob('*.ko'))) != len(order):
+    raise SystemExit('unexpected staged module count')
+names = ['drivers/gpu/drm/asahi/asahi_m4.ko', 'drivers/gpu/drm/apple/appledrm.ko',
+         'drivers/phy/apple/phy-apple-dptx.ko', 'drivers/net/ethernet/aquantia/atlantic/atlantic.ko',
+         'drivers/net/ethernet/broadcom/tg3.ko']
+if rootfix:
+    names += ['drivers/nvme/host/nvme-apple.ko', 'drivers/md/dm-crypt.ko', 'drivers/md/dm-integrity.ko']
+for name in names:
+    value = subprocess.check_output(['modinfo', '-F', 'vermagic', str(base / 'kernel' / name)], text=True)
+    if not value.split() or value.split()[0] != release:
+        raise SystemExit('kernel module release mismatch: ' + name)
+PY
+mkdir -- "$output"
+touch "$output/INCOMPLETE"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$stage" \
+  -czf "$output/m4-r7-arch-stage.tar.gz" usr
+stage_sha=$(sha256sum "$output/m4-r7-arch-stage.tar.gz" | cut -d' ' -f1)
+cp -- "$preset" "$output/linux-omarchy-m4-research.preset"
+preset_sha=$(sha256sum "$output/linux-omarchy-m4-research.preset" | cut -d' ' -f1)
+sed -e "s/@STAGE_SHA256@/$stage_sha/" -e "s/@PRESET_SHA256@/$preset_sha/" "$template" > "$output/PKGBUILD"
+printf '%s\n' 'RESEARCH ONLY: do not install; no M4 boot, display, recovery or Arch environment qualification.' > "$output/DO-NOT-INSTALL.txt"
+# The package tools may run in a non-Arch VM: -d skips dependency resolution,
+# not source checksums. It does not validate runtime package dependencies.
+(cd "$output" && makepkg --nodeps --noconfirm --cleanbuild > makepkg.log 2>&1)
+shopt -s nullglob
+packages=("$output"/linux-omarchy-m4-research-*.pkg.tar.zst "$output"/linux-omarchy-m4-research-*.pkg.tar.gz)
+(( ${#packages[@]} == 1 )) || { echo 'Expected one research package' >&2; exit 1; }
+pacman -Qip "${packages[0]}" > "$output/package-info.txt"
+sha256sum "${packages[0]}" > "$output/package.sha256"
+rm -- "$output/INCOMPLETE"
+echo "Research package built and inspected; it was not installed."

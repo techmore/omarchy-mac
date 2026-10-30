@@ -1,0 +1,20 @@
+# Protect other transactions that would rebuild m1n1 while M4 research is installed.
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/dtbs/*
+Target = usr/lib/asahi-boot/*
+
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/share/omarchy-platform/dtb-overlays/*
+
+[Action]
+Description = Checking for an unqualified M4 research boot chain...
+When = PreTransaction
+Exec = /usr/lib/omarchy-mac/boot/m4-coexistence-guard
+AbortOnFail

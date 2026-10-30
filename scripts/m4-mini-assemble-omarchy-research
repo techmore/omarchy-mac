@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Assemble an offline M4 integration bundle; never install or alter a boot device."""
+import argparse
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
+BOOT_COMMIT = '1b7d1408a16051821ebd7608233a1429c222c5c1'
+UAPI_SHA = 'eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015'
+EXPECTED = {
+    'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
+    'loader': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
+    'boot': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
+    'stage1': 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab',
+    'mesa-source': 'a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778',
+    'mesa-launcher': '508c8636a0651a2f267a0e009ad9e15f1c7e1ea839b81a7311a96f76d12603b7',
+    'mesa-uwsm': 'f8b7f005b60bc8e29ed546b13605ac634a690992a7a0629f130cf6a5047aab54',
+    'mesa-uwsm-loader': '921f6fdcd7412ab2522613c24c78838b502f4c08dd5166ac31805f1ebbdaccc4',
+    'mesa-package': '2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2',
+    'initramfs-default': '03d1173a0ecd17213b779e52b1b4b0a333b3341a669c209ef1c057717a2cbbe9',
+    'initramfs-fallback': 'f7a13b67f0a202ba196d8c73499b59d7566ecbb88ebaaeeb9dae3b1aea0d2862',
+}
+
+
+def sha_file(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def member(archive, name):
+    matches = [item for item in archive.getmembers() if item.name == name and item.isfile()]
+    if len(matches) != 1:
+        raise ValueError(f'package does not contain exactly one regular {name}')
+    with archive.extractfile(matches[0]) as stream:
+        return stream.read()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--kernel-package', required=True, type=Path)
+    parser.add_argument('--loader-package', required=True, type=Path)
+    parser.add_argument('--boot-sample', required=True, type=Path)
+    parser.add_argument('--stage1', type=Path, help='optional locked unsigned M4 stage-one binary')
+    parser.add_argument('--mesa-prepared', required=True, type=Path)
+    parser.add_argument('--mesa-package', type=Path, help='optional locked Arch ARM Mesa research package')
+    parser.add_argument('--initramfs-dir', type=Path, help='optional locked generic Arch ARM fixture images')
+    parser.add_argument('--output', required=True, type=Path)
+    args = parser.parse_args()
+    sources = {
+        'kernel': args.kernel_package, 'loader': args.loader_package, 'boot': args.boot_sample,
+        'mesa-source': args.mesa_prepared / 'm4-mesa-source.tar.gz',
+        'mesa-launcher': args.mesa_prepared / 'm4-mini-run-mesa',
+        'mesa-uwsm': args.mesa_prepared / 'm4-mesa-uwsm-env',
+        'mesa-uwsm-loader': args.mesa_prepared / 'm4-mesa-uwsm-loader',
+        'mesa-recipe': args.mesa_prepared / 'PKGBUILD',
+        'recovery-capsule': ROOT / 'scripts/m4-mini-recovery-capsule',
+        'boot-transition': ROOT / 'scripts/m4-mini-prepare-boot-transition',
+        'efi-proposal': ROOT / 'scripts/m4-mini-prepare-efi-research',
+        'gravity-installer': ROOT / 'scripts/m4-mini-prepare-gravity-installer',
+        'gravity-image': ROOT / 'scripts/m4-mini-prepare-gravity-image',
+        'gravity-esp': ROOT / 'scripts/m4-mini-prepare-gravity-esp-template',
+        'gravity-helper': ROOT / 'm4-mini/gravity-installer/omarchy_m4.py',
+    }
+    if args.mesa_package is not None:
+        sources['mesa-package'] = args.mesa_package
+    if args.stage1 is not None:
+        sources['stage1'] = args.stage1
+    if args.initramfs_dir is not None:
+        sources['initramfs-default'] = args.initramfs_dir / 'default.img'
+        sources['initramfs-fallback'] = args.initramfs_dir / 'fallback.img'
+    try:
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('a new output directory is required')
+        boot_path = 'packages/omarchy-mac/boot'
+        dirty = subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=normal', '--', boot_path], text=True)
+        if dirty:
+            raise ValueError('Omarchy Mac boot source must be committed before bundling')
+        locked_tree = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', f'{BOOT_COMMIT}:{boot_path}'], text=True).strip()
+        head_tree = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', f'HEAD:{boot_path}'], text=True).strip()
+        if head_tree != locked_tree:
+            raise ValueError('Omarchy Mac boot source differs from the locked integration bundle')
+        boot_source = subprocess.check_output(['git', '-C', str(ROOT), 'archive', '--format=tar', BOOT_COMMIT, boot_path])
+        if (args.mesa_prepared / 'INCOMPLETE').exists():
+            raise ValueError('Mesa preparation is incomplete')
+        template = (ROOT / 'm4-mini/arch-research/PKGBUILD-mesa.in').read_text()
+        recipe = (template.replace('@SOURCE_SHA256@', EXPECTED['mesa-source'])
+                  .replace('@LAUNCHER_SHA256@', EXPECTED['mesa-launcher'])
+                  .replace('@UWSM_SHA256@', EXPECTED['mesa-uwsm'])
+                  .replace('@UWSM_LOADER_SHA256@', EXPECTED['mesa-uwsm-loader']))
+        expected = EXPECTED.copy()
+        expected['mesa-recipe'] = hashlib.sha256(recipe.encode()).hexdigest()
+        for name in ('recovery-capsule', 'boot-transition', 'efi-proposal', 'gravity-installer',
+                     'gravity-image', 'gravity-esp', 'gravity-helper'):
+            path = sources[name]
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f'{name} must be a regular local script')
+            expected[name] = sha_file(path)
+        for name, path in sources.items():
+            if path.is_symlink() or not path.is_file() or sha_file(path) != expected[name]:
+                raise ValueError(f'{name} is missing, linked or does not match its locked hash')
+        kernel_lock = json.loads((ROOT / 'm4-mini/source-lock-r7-rootfix.json').read_text())
+        mesa_lock = json.loads((ROOT / 'm4-mini/mesa-source-lock.json').read_text())
+        with tarfile.open(sources['mesa-source'], 'r:gz') as mesa_archive:
+            mesa_uapi = member(mesa_archive, 'techmore-mesa-96a24da/include/drm-uapi/asahi_drm.h')
+        if (kernel_lock['file_sha256'].get('include/uapi/drm/asahi_drm.h') != UAPI_SHA or
+                mesa_lock.get('kernel_and_mesa_uapi_sha256') != UAPI_SHA or
+                hashlib.sha256(mesa_uapi).hexdigest() != UAPI_SHA):
+            raise ValueError('kernel and Mesa source locks do not share the expected Asahi UAPI')
+        if args.mesa_package is not None:
+            prefix = 'opt/omarchy-m4-mesa-research/'
+            with tarfile.open(args.mesa_package, 'r:*') as mesa_package:
+                info = member(mesa_package, '.PKGINFO').decode('utf-8').splitlines()
+                buildinfo = member(mesa_package, '.BUILDINFO').decode('utf-8').splitlines()
+                for line in ('pkgname = mesa-omarchy-m4-research', 'pkgver = 26.3.0.r1-2',
+                             'arch = aarch64', 'depend = lm_sensors',
+                             'depend = libLLVM.so=23.1-64', 'depend = libdisplay-info.so=3-64',
+                             'depend = libsensors.so=5-64'):
+                    if info.count(line) != 1:
+                        raise ValueError(f'Mesa package metadata is missing or repeats {line}')
+                if buildinfo.count('pkgbuild_sha256sum = ' + expected['mesa-recipe']) != 1:
+                    raise ValueError('Mesa package was not built from the locked recipe')
+                for path, locked in ((prefix + 'bin/m4-mini-run-mesa', EXPECTED['mesa-launcher']),
+                                     (prefix + 'share/omarchy-m4/uwsm-env', EXPECTED['mesa-uwsm']),
+                                     ('usr/share/uwsm/env.d/80-omarchy-m4-mesa-research', EXPECTED['mesa-uwsm-loader'])):
+                    if hashlib.sha256(member(mesa_package, path)).hexdigest() != locked:
+                        raise ValueError(f'Mesa package has an unexpected {path}')
+                for path in ('lib/libvulkan_asahi.so', 'lib/libgallium-26.3.0-devel.so',
+                             'lib/libEGL_mesa.so.0.0.0'):
+                    elf = member(mesa_package, prefix + path)
+                    if elf[:6] != b'\x7fELF\x02\x01' or int.from_bytes(elf[18:20], 'little') != 183:
+                        raise ValueError(f'Mesa package {path} is not an AArch64 ELF library')
+                vk = json.loads(member(mesa_package, prefix + 'share/vulkan/icd.d/asahi_icd.aarch64.json'))
+                egl = json.loads(member(mesa_package, prefix + 'share/glvnd/egl_vendor.d/50_mesa.json'))
+                if (vk['ICD']['library_path'] != '/opt/omarchy-m4-mesa-research/lib/libvulkan_asahi.so' or
+                        egl['ICD']['library_path'] != 'libEGL_mesa.so.0'):
+                    raise ValueError('Mesa package driver manifests do not reference the private libraries')
+        with tarfile.open(args.kernel_package, 'r:*') as kernel, tarfile.open(args.loader_package, 'r:*') as loader:
+            base = f'usr/lib/modules/{KVER}/'
+            dtb = member(kernel, base + 'dtbs/apple/t8132-j773g.dtb')
+            image = member(kernel, base + 'vmlinuz')
+            stage2 = member(loader, 'usr/lib/asahi-boot/omarchy-m4-research/m1n1.bin')
+            uboot = member(loader, 'usr/lib/asahi-boot/omarchy-m4-research/u-boot-nodtb.bin')
+        if hashlib.sha256(dtb).hexdigest() != '734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3':
+            raise ValueError('kernel package has the wrong J773g device tree')
+        if ('Linux version ' + KVER + ' ').encode() not in image:
+            raise ValueError('kernel package image has the wrong release')
+        boot = args.boot_sample.read_bytes()
+        offset = len(stage2) + len(dtb)
+        if boot[:len(stage2)] != stage2 or boot[len(stage2):offset] != dtb or gzip.decompress(boot[offset:]) != uboot:
+            raise ValueError('boot sample does not match the packaged stage 2, J773g tree and U-Boot')
+
+        args.output.mkdir()
+        marker = args.output / 'INCOMPLETE'
+        marker.write_text('Do not use this incomplete bundle.\n')
+        destinations = {
+            'kernel': 'kernel/' + args.kernel_package.name,
+            'loader': 'bootloader/' + args.loader_package.name,
+            'boot': 'bootloader/boot-sample.bin',
+            'mesa-source': 'mesa/m4-mesa-source.tar.gz',
+            'mesa-launcher': 'mesa/m4-mini-run-mesa',
+            'mesa-uwsm': 'mesa/m4-mesa-uwsm-env',
+            'mesa-uwsm-loader': 'mesa/m4-mesa-uwsm-loader',
+            'mesa-recipe': 'mesa/PKGBUILD',
+            'recovery-capsule': 'scripts/m4-mini-recovery-capsule',
+            'boot-transition': 'scripts/m4-mini-prepare-boot-transition',
+            'efi-proposal': 'scripts/m4-mini-prepare-efi-research',
+            'gravity-installer': 'scripts/m4-mini-prepare-gravity-installer',
+            'gravity-image': 'scripts/m4-mini-prepare-gravity-image',
+            'gravity-esp': 'scripts/m4-mini-prepare-gravity-esp-template',
+            'gravity-helper': 'm4-mini/gravity-installer/omarchy_m4.py',
+        }
+        if args.mesa_package is not None:
+            destinations['mesa-package'] = 'mesa/' + args.mesa_package.name
+        if args.stage1 is not None:
+            destinations['stage1'] = 'bootloader/m1n1-stage1.bin'
+        if args.initramfs_dir is not None:
+            destinations['initramfs-default'] = 'initramfs/default.img'
+            destinations['initramfs-fallback'] = 'initramfs/fallback.img'
+        for name, relative in destinations.items():
+            destination = args.output / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(sources[name], destination)
+            if name in ('recovery-capsule', 'boot-transition', 'efi-proposal',
+                        'gravity-installer', 'gravity-image', 'gravity-esp'):
+                destination.chmod(0o755)
+            if sha_file(destination) != expected[name]:
+                raise ValueError(f'copy verification failed: {name}')
+        shutil.copyfile(ROOT / 'm4-mini/r7-rootfix-build-2026-10-30.json', args.output / 'kernel-build-receipt.json')
+        (args.output / 'omarchy-mac-boot-source.tar.gz').write_bytes(gzip.compress(boot_source, mtime=0))
+        (args.output / 'DO-NOT-INSTALL.txt').write_text(
+            'RESEARCH ONLY: this bundle is not an installer. Packages are unsigned and unqualified.\n'
+            'boot-sample.bin is not target-specific and must not be written to an ESP.\n'
+            + ('Mesa was built for Arch ARM but has not been tested on the M4.\n' if args.mesa_package
+               else 'The Mesa recipe is unbuilt on Arch.\n')
+            + ('The included initramfs images come from a generic fixture, not the target.\n' if args.initramfs_dir else '')
+            + 'Boot, HDMI and recovery remain unverified.\n')
+        manifest = {'scope': 'offline M4 Omarchy integration research; no deployment or hardware qualification',
+                    'kernel_release': KVER, 'omarchy_boot_source_commit': BOOT_COMMIT,
+                    'asahi_uapi_sha256': UAPI_SHA, 'hardware_validated': False,
+                    'files': {relative: expected[name] for name, relative in destinations.items()},
+                    'checks': ['package image release matches', 'locked kernel UAPI and Mesa archive header hashes match',
+                               'J773g DTB matches the boot sample',
+                               'stage 2 and decompressed U-Boot match the loader package'],
+                    'limitations': ['unsigned packages', 'boot sample has no target-specific configuration',
+                                    'no verified recovery, native boot or HDMI']}
+        if args.mesa_package is not None:
+            manifest['checks'].append('Mesa package recipe, AArch64 libraries, session files and driver manifests match')
+            manifest['limitations'].append('Mesa package has not been tested on the M4 GPU')
+            receipt = ROOT / 'm4-mini/mesa-arch-package-2026-10-30.json'
+            shutil.copyfile(receipt, args.output / 'mesa-build-receipt.json')
+            manifest['files']['mesa-build-receipt.json'] = sha_file(args.output / 'mesa-build-receipt.json')
+        else:
+            manifest['limitations'].append('Mesa recipe unbuilt on Arch')
+        if args.initramfs_dir is not None:
+            manifest['checks'].append('default and fallback initramfs match the M4 display fixture receipt')
+            manifest['limitations'].append('initramfs images are from a generic Arch ARM fixture, not the target')
+            receipt = ROOT / 'm4-mini/display-initramfs-2026-10-30.json'
+            shutil.copyfile(receipt, args.output / 'initramfs-build-receipt.json')
+            manifest['files']['initramfs-build-receipt.json'] = sha_file(args.output / 'initramfs-build-receipt.json')
+        if args.stage1 is not None:
+            manifest['limitations'].append('stage one is unsigned and has not been paired to a target Apple boot entry')
+        for name in ('kernel-build-receipt.json', 'omarchy-mac-boot-source.tar.gz', 'DO-NOT-INSTALL.txt'):
+            manifest['files'][name] = sha_file(args.output / name)
+        (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+        marker.unlink()
+    except (OSError, ValueError, tarfile.TarError, EOFError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-assemble-omarchy-research: {error}', file=sys.stderr)
+        return 1
+    print('Offline M4 kernel, boot and Mesa research bundle assembled; nothing installed.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

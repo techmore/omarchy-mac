@@ -1,0 +1,14 @@
+# This hook must already be installed before the transaction to protect it.
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = linux-omarchy-m4-research
+Target = m1n1-omarchy-m4-research
+
+[Action]
+Description = Refusing unqualified M4 research packages...
+When = PreTransaction
+Exec = /usr/lib/omarchy-mac/boot/m4-research-transaction-guard
+AbortOnFail

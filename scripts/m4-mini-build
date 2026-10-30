@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Build an unqualified M4 mini research kernel; does not install it.
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 [--config-only] [--r7] [--arch-research] [--rootfix] CLEAN_KERNEL_CHECKOUT NEW_BUILD_DIRECTORY [JOBS]" >&2
+  exit 2
+}
+config_only=0
+r7=0
+arch_research=0
+rootfix=0
+while [[ ${1:-} == --* ]]; do
+  case "$1" in
+    --config-only) config_only=1 ;;
+    --r7) r7=1 ;;
+    --arch-research) arch_research=1 ;;
+    --rootfix) rootfix=1 ;;
+    *) usage ;;
+  esac
+  shift
+done
+[[ $# -ge 2 && $# -le 3 ]] || usage
+(( ! arch_research || r7 )) || { echo '--arch-research requires --r7' >&2; exit 2; }
+(( ! rootfix || (r7 && arch_research) )) || { echo '--rootfix requires --r7 and --arch-research' >&2; exit 2; }
+source_dir=$(realpath "$1")
+output_dir=$2
+jobs=${3:-3}
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || usage
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(cd -- "$script_dir/.." && pwd)
+lock="$repo_dir/m4-mini/source-lock.json"
+localversion=-omarchy-m4-candidate
+fragments=("$repo_dir/m4-mini/config/gravity.config" "$repo_dir/m4-mini/config/gravity-aarch64.config")
+if (( r7 )); then
+  lock="$repo_dir/m4-mini/source-lock-r7.json"
+  localversion=-omarchy-m4-r7
+  fragments+=("$repo_dir/m4-mini/config/j773g-target.config")
+fi
+if (( arch_research )); then
+  # Omarchy's Apple boot tooling discovers DTBs under releases ending -ARCH.
+  # This naming contract alone does not make the result an installable package.
+  localversion=-omarchy-m4-r7-ARCH
+fi
+if (( rootfix )); then
+  # Keep the earlier build distinct while adding the encrypted-root support
+  # Omarchy's sd-encrypt and first-boot initramfs hooks require.
+  lock="$repo_dir/m4-mini/source-lock-r7-rootfix.json"
+  localversion=-omarchy-m4-r7-rootfix-ARCH
+  fragments+=("$repo_dir/m4-mini/config/omarchy-root.config")
+fi
+python3 "$script_dir/m4-mini-source-check" "$source_dir" --lock "$lock"
+command -v rustfmt >/dev/null
+rustfmt --version >/dev/null
+if [[ -z ${RUST_LIB_SRC:-} ]]; then
+  export RUST_LIB_SRC="$(rustc --print sysroot)/lib/rustlib/src/rust/library"
+fi
+[[ -f "$RUST_LIB_SRC/core/src/lib.rs" ]] || { echo 'Rust library sources are missing' >&2; exit 1; }
+# A new, separate output directory prevents overwriting an existing build.
+output_dir=$(realpath -m -- "$output_dir")
+case "$output_dir/" in "$source_dir/"*) echo 'Build directory must be outside the source checkout' >&2; exit 1;; esac
+mkdir -- "$output_dir"
+base=(make -C "$source_dir" "O=$output_dir" ARCH=arm64 CC=clang LD=ld HOSTCC=clang)
+if (( arch_research )); then
+  # An explicitly empty LOCALVERSION suppresses setlocalversion's extra '+'
+  # for a clean checkout whose commit is not exactly tagged.
+  base+=(LOCALVERSION=)
+fi
+"${base[@]}" rustavailable
+"${base[@]}" defconfig asahi.config
+"$source_dir/scripts/kconfig/merge_config.sh" -m -O "$output_dir" "$output_dir/.config" \
+  "${fragments[@]}"
+"$source_dir/scripts/config" --file "$output_dir/.config" --set-str LOCALVERSION "$localversion" --disable LOCALVERSION_AUTO
+"${base[@]}" olddefconfig
+python3 "$script_dir/m4-mini-source-check" "$source_dir" --config "$output_dir/.config" --lock "$lock"
+if (( arch_research )); then
+  # Kbuild reads include/config/auto.conf, which olddefconfig alone may not
+  # generate in a new output directory. Prepare before checking the release.
+  "${base[@]}" -s prepare
+  kernel_release=$("${base[@]}" -s kernelrelease)
+  [[ $kernel_release == *-ARCH ]] || { echo 'Kernel release must end in -ARCH' >&2; exit 1; }
+  echo "Arch research kernel release: $kernel_release"
+fi
+if (( ! config_only )); then
+  "${base[@]}" "-j$jobs" Image modules dtbs
+fi

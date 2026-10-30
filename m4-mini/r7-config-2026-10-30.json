@@ -1,0 +1,11 @@
+{
+  "scope": "local ARM64 configuration check, not a full build or hardware test",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "candidate_branch": "m4-mini-aurora-r7-research",
+  "parent": "6363990c4a4535b36dccd6c9a972e124861274fa",
+  "toolchain": "Ubuntu 24.04 ARM64 VM, clang 18.1.3, GNU ld, rustc 1.99.0 and bindgen 0.71.1",
+  "command": "scripts/m4-mini-build --config-only --r7 <clean-locked-checkout> <new-build-directory>",
+  "config_sha256": "58fa14d49626452997589816ec96cfa280c3d304134ce174c386846c6142f9fd",
+  "checks": {"CONFIG_ARCH_APPLE": "y", "CONFIG_ARM64_16K_PAGES": "y", "CONFIG_RUST": "y", "CONFIG_DRM_APPLE": "m", "CONFIG_DRM_ASAHI_M4": "m", "CONFIG_PHY_APPLE_DPTX": "m", "CONFIG_AQTION": "m", "CONFIG_TIGON3": "m", "CONFIG_APPLE_WATCHDOG": "y", "CONFIG_BLK_DEV_SR": "y", "CONFIG_ISO9660_FS": "y"},
+  "not_verified": ["full R7 Image, modules and DTBs", "module link", "actual Ethernet controller", "boot", "HDMI", "firmware handoff", "recovery"]
+}

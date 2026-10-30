@@ -1,0 +1,12 @@
+{
+  "scope": "isolated upstream Wi-Fi DMA research; not a hardware-qualified release",
+  "kernel_base": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "kernel_branch": "https://github.com/techmore/linux-m1pro-touchid/tree/m4-mini-bcm4388-dma-research",
+  "kernel_commit": "7a684494679ae5833a32d05d7a52f4e1c1be4e30",
+  "upstream_commits": ["f0ba5fd51ff23077ce66cb9be79d41a4b7c19c5e", "25836bde7a3aa664cac9d8ae032b6b2c103cb2c3", "3217ca6a52211e78b1f3fb84d19d9cf912f64294"],
+  "adaptation": "The BCM4387 patch's includes were placed in Gravity's existing header layout; all three upstream changes are kept together.",
+  "source_sha256": "9dead35e4155d11efa8af55e634c239bebb74a8df027de4a3380d8de6a9aae8d",
+  "compiled_object_sha256": "ac3dc7e89404fdf64d8e0211c5bf88792d4f417435f20b4fc32e723074cec833",
+  "verification": ["ARM64 msgbuf.o compiled", "extracted C functions tested for BCM4387 and BCM4388, other devices, and direction storage", "negative controls failed as expected", "published file blob matches local source"],
+  "limitations": ["changes TX direction and RX direction for other radios", "mini radio identity unverified", "no hardware, IOMMU, Wi-Fi or Bluetooth testing"]
+}

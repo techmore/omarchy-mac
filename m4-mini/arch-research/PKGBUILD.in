@@ -1,0 +1,24 @@
+# Local experiment only. No bootloader, initramfs or recovery admission is implied.
+pkgname=linux-omarchy-m4-research
+pkgver=7.1.13.r7
+pkgrel=1
+pkgdesc='Unqualified M4 mini research kernel; do not install on a real system'
+arch=('aarch64')
+url='https://github.com/techmore/linux-m1pro-touchid'
+license=('GPL-2.0-only')
+depends=('coreutils' 'kmod' 'initramfs' 'm1n1-omarchy-m4-research')
+backup=('etc/mkinitcpio.d/linux-omarchy-m4-research.preset')
+options=('!strip' '!debug')
+source=('m4-r7-arch-stage.tar.gz' 'linux-omarchy-m4-research.preset')
+sha256sums=('@STAGE_SHA256@' '@PRESET_SHA256@')
+
+package() {
+  local release=7.1.13-omarchy-m4-r7-ARCH
+  local modules="$srcdir/usr/lib/modules/$release"
+  [[ -f $modules/vmlinuz && -f $modules/dtbs/apple/t8132-j773g.dtb && -f $modules/modules.dep ]] || return 1
+  [[ $(<"$modules/pkgbase") == "$pkgname" ]] || return 1
+  install -d "$pkgdir/usr"
+  cp -a "$srcdir/usr/." "$pkgdir/usr/"
+  install -Dm644 "$srcdir/linux-omarchy-m4-research.preset" \
+    "$pkgdir/etc/mkinitcpio.d/linux-omarchy-m4-research.preset"
+}

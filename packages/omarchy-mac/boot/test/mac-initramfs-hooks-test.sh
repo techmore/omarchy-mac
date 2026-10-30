@@ -60,10 +60,34 @@ pass "an unknown option, an unreadable configuration or no HOOKS exit 1"
 
 cat >"$tmp/bin/pacman" <<'SH'
 #!/bin/bash
-[[ $* == "-Qq" ]] && printf 'linux-aurora\n'
+[[ $* == "-Qq" ]] || exit 1
+[[ ${QUERY_FAIL:-0} == 0 ]] || exit 1
+printf '%s\n' "${PACKAGES-linux-aurora}"
 SH
 chmod +x "$tmp/bin/pacman"
 printf 'PRESETS=(default)\ndefault_config=%s\n' "$systemd" >"$tmp/presets/linux-aurora.preset"
 [[ " $(PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox "$ROOT/bin/omarchy-mac-initramfs-hooks") " == *" systemd "* ]] ||
   fail "the installed kernel's preset is read"
 pass "the preset follows the installed Apple Silicon kernel"
+
+printf 'PRESETS=(default)\ndefault_config=%s\n' "$busybox" >"$tmp/presets/linux-asahi.preset"
+for packages in '' linux $'linux-aurora\nlinux-omarchy-m4-research' $'linux-asahi\nlinux-aurora'; do
+  if PACKAGES="$packages" PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox \
+    "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
+    fail "ambiguous installed kernels do not silently select the linux-asahi preset"
+  fi
+done
+if QUERY_FAIL=1 PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox \
+  "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
+  fail "an unreadable package database does not silently select a preset"
+fi
+if PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox OMARCHY_MKINITCPIO_KERNEL='../other' \
+  "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
+  fail "an explicit kernel cannot traverse outside the preset directory"
+fi
+printf 'PRESETS=(default)\ndefault_config=%s\n' "$systemd" >"$tmp/presets/linux-omarchy-m4-research.preset"
+[[ " $(PACKAGES=$'linux-aurora\nlinux-omarchy-m4-research' PATH="$tmp/bin:$ROOT/bin:$PATH" \
+  OMARCHY_MKINITCPIO_CONF=$busybox OMARCHY_MKINITCPIO_KERNEL=linux-omarchy-m4-research \
+  "$ROOT/bin/omarchy-mac-initramfs-hooks") " == *" systemd "* ]] ||
+  fail "an explicit M4 preset is inspected even when another kernel is installed"
+pass "ambiguous or unreadable kernel selection fails closed, while an explicit safe preset is supported"

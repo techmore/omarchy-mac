@@ -1,0 +1,26 @@
+{
+  "scope": "offline M4 EFI assembly using synthetic ESPs, firmware and root UUID; no Apple hardware",
+  "artifact": "m4-efi-fixture-proposal-v4.tar",
+  "artifact_sha256": "8260407b70eae5ec0787759071daa5f82861e29f8e3e9bf5c0e69922e7fa20b8",
+  "builder_sha256": "411e1c6c9af1b3548726b9aeb60d081ab4530476c201416c89d786a799fb769b",
+  "environment": "local Arch Linux ARM overlay, systemd-ukify 262.1, Limine 12.9.6",
+  "kernel_image_sha256": "539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833",
+  "default_uki_sha256": "9306b1f1c8329eb19f6d89cd40527a0162d770c0bcf4065204288a362db154e7",
+  "fallback_uki_sha256": "62211bcb8caa33516b5b5ee0ab26b96cb2a207529ad2887856492aca3bd9db57",
+  "checks": [
+    "UKI embedded kernel, initramfs and command line match their inputs",
+    "both initramfs images contain the required M4 boot and display module dependency closures",
+    "Limine menu passed the M4 default and fallback selection checker",
+    "unsigned stage one and intended target ESP settings were included",
+    "target stage-two recovery and vendor firmware bytes match the synthetic snapshot",
+    "shared ESP, missing firmware and mismatched target stage-two inputs were rejected",
+    "stage-one handoff names the synthetic target ESP for both Gravity and Asahi"
+  ],
+  "limitations": [
+    "all ESP identities, the root UUID and firmware are synthetic",
+    "no Apple boot entry or stage-one pairing was created",
+    "no real snapshot or restore was exercised",
+    "no M4 boot, early console or HDMI test"
+  ],
+  "hardware_validated": false
+}

@@ -10,7 +10,7 @@ trap 'rm -rf "$test_tmp"' EXIT
 
 # Minimal shared menu fixture; the production template is owned by omarchy-settings.
 mkdir -p "$test_tmp/runtime/default/limine"
-printf 'timeout: 3\ninterface_branding: Omarchy Bootloader\n' >"$test_tmp/runtime/default/limine/limine.conf"
+printf 'timeout: 3\ndefault_entry: 2\ninterface_branding: Omarchy Bootloader\n' >"$test_tmp/runtime/default/limine/limine.conf"
 stub_bin="$test_tmp/bin"
 calls="$test_tmp/calls"
 esp="$test_tmp/esp"
@@ -19,7 +19,8 @@ mkdir -p "$stub_bin" "$esp/EFI/BOOT" "$etc" "$test_tmp/share/limine" "$test_tmp/
 
 printf '#!/bin/bash\nexec "$@"\n' >"$stub_bin/sudo"
 printf '#!/bin/bash\nexit 0\n' >"$stub_bin/omarchy-hw-apple-silicon"
-printf '#!/bin/bash\necho linux-aurora\n' >"$stub_bin/omarchy-mac-kernel"
+printf '#!/bin/bash\necho "${TEST_KERNEL:-linux-aurora}"\n' >"$stub_bin/omarchy-mac-kernel"
+printf '#!/bin/bash\necho "${TEST_SYSTEM_ESP:-$TEST_ESP}"\n' >"$stub_bin/omarchy-mac-esp"
 printf '#!/bin/bash\necho "systemctl $*" >>"$TEST_CALLS"\n' >"$stub_bin/systemctl"
 printf '#!/bin/bash\necho "limine-snapper-sync $*" >>"$TEST_CALLS"\n' >"$stub_bin/limine-snapper-sync"
 cat >"$stub_bin/findmnt" <<'SH'
@@ -48,14 +49,29 @@ cat >"$stub_bin/limine-update" <<'SH'
 echo "limine-update" >>"$TEST_CALLS"
 [[ -z ${FAIL_LIMINE_UPDATE:-} ]] || exit 1
 mkdir -p "$TEST_ESP/EFI/Linux"
-printf 'UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_linux-aurora.efi"
+kernel=${TEST_KERNEL:-linux-aurora}
+printf 'UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_$kernel.efi"
+if [[ $kernel == linux-omarchy-m4-research && ${TEST_NO_FALLBACK:-0} != 1 ]]; then
+  printf 'fallback UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_$kernel-fallback.efi"
+fi
 if ! grep -q '^/+Omarchy' "$TEST_ESP/limine.conf"; then
   cmdline=$(sed -n 's/^KERNEL_CMDLINE\[default\]="\(.*\)"$/\1/p' "$TEST_LIMINE_DEFAULT")
-  printf '/+Omarchy\n  //linux-aurora\n  protocol: efi\n  path: boot():/EFI/Linux/omarchy_linux-aurora.efi\n  cmdline: %s\n' "$cmdline" >>"$TEST_ESP/limine.conf"
+  block=$(mktemp)
+  printf '/+Omarchy\n  //%s\n  protocol: efi\n  path: boot():/EFI/Linux/omarchy_%s.efi\n  cmdline: %s\n' "$kernel" "$kernel" "$cmdline" >"$block"
+  if [[ $kernel == linux-omarchy-m4-research && ${TEST_NO_FALLBACK:-0} != 1 ]]; then
+    printf '  //%s-fallback\n  path: boot():/EFI/Linux/omarchy_%s-fallback.efi\n' "$kernel" "$kernel" >>"$block"
+  fi
+  awk -v block="$block" '
+    !inserted && /^\// { while ((getline line < block) > 0) print line; close(block); inserted=1 }
+    { print }
+    END { if (!inserted) while ((getline line < block) > 0) print line }
+  ' "$TEST_ESP/limine.conf" >"$block.menu"
+  cp "$block.menu" "$TEST_ESP/limine.conf"
+  rm -f "$block" "$block.menu"
 fi
 SH
 chmod +x "$stub_bin"/*
-for name in omarchy-mac-limine-cmdline omarchy-mac-limine-deploy omarchy-mac-limine-active; do
+for name in omarchy-mac-limine-cmdline omarchy-mac-limine-deploy omarchy-mac-limine-active omarchy-mac-m4-limine-menu-check; do
   ln -s "$ROOT/bin/$name" "$stub_bin/$name"
 done
 
@@ -71,7 +87,7 @@ printf 'UUID=root-uuid / btrfs subvol=@ 0 0\n' >"$etc/fstab"
 printf 'aaaabbbbccccddddeeeeffff00001111\n' >"$etc/machine-id"
 
 run() {
-  TEST_CALLS="$calls" TEST_ESP="$esp" TEST_UPDATE_GRUB_DEFAULT="$etc/update-grub" TEST_LIMINE_DEFAULT="$etc/limine" \
+  TEST_CALLS="$calls" TEST_KERNEL="${TEST_KERNEL:-linux-aurora}" TEST_ESP="$esp" TEST_UPDATE_GRUB_DEFAULT="$etc/update-grub" TEST_LIMINE_DEFAULT="$etc/limine" \
   TEST_GRUB_DIR="$test_tmp/boot/grub" OMARCHY_GRUB_DIR="$test_tmp/boot/grub" \
   OMARCHY_PATH="$test_tmp/runtime" OMARCHY_ESP="$esp" OMARCHY_LIMINE_EFI="$test_tmp/share/limine/BOOTAA64.EFI" \
   OMARCHY_GRUB_DEFAULT="$etc/grub" OMARCHY_UPDATE_GRUB_DEFAULT="$etc/update-grub" OMARCHY_LIMINE_DEFAULT="$etc/limine" \
@@ -352,3 +368,41 @@ chmod +x "$stub_bin/omarchy-mac-limine-deploy"
 if run; then fail "success without matching EFI bytes is refused"; fi
 [[ $(cat "$esp/EFI/BOOT/BOOTAA64.EFI") == "previous-efi" ]] || fail "false-success rollback retains the prior loader"
 pass "successful activation requires actual packaged EFI bytes"
+
+# M4 research keeps the previous GRUB recovery artifacts and requires a
+# fallback UKI. A foreign menu forces the template-replacement path.
+rm "$stub_bin/omarchy-mac-limine-deploy"
+ln -s "$ROOT/bin/omarchy-mac-limine-deploy" "$stub_bin/omarchy-mac-limine-deploy"
+mkdir -p "$esp/EFI/BOOT"
+printf 'prior recovery EFI\n' >"$esp/EFI/BOOT/grub-aa64.efi"
+printf 'foreign menu\n/GRUB (recovery)\n    protocol: efi_chainload\n    path: boot():/EFI/BOOT/grub-aa64.efi\n' >"$esp/limine.conf"
+mkdir -p "$esp/m1n1"
+printf 'current stage two\n' >"$esp/m1n1/boot.bin"
+cp "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader"
+cp "$esp/limine.conf" "$test_tmp/preflight-menu"
+if TEST_KERNEL=linux-omarchy-m4-research run 2>"$test_tmp/err"; then fail "M4 requires saved stage two before activation"; fi
+grep -Fq 'no saved prior stage two' "$test_tmp/err" || fail "M4 reports the missing stage-two backup"
+cmp -s "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader" && cmp -s "$esp/limine.conf" "$test_tmp/preflight-menu" ||
+  fail "missing recovery fails before changing boot files"
+printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+if TEST_KERNEL=linux-omarchy-m4-research TEST_SYSTEM_ESP=/wrong-esp run 2>"$test_tmp/err"; then fail "M4 refuses another ESP"; fi
+grep -Fq 'not the system ESP' "$test_tmp/err" || fail "M4 reports the mismatched system ESP"
+printf 'corrupt\n' >>"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+if TEST_KERNEL=linux-omarchy-m4-research run 2>"$test_tmp/err"; then fail "M4 refuses a corrupted stage-two backup"; fi
+grep -Fq 'does not match its SHA-256' "$test_tmp/err" || fail "M4 reports the corrupt stage-two backup"
+printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+TEST_KERNEL=linux-omarchy-m4-research run || fail "M4 activates with a fallback fixture"
+grep -Fxq 'MKINITCPIO_FALLBACK="linux-omarchy-m4-research"' "$etc/limine" || fail "M4 enables its fallback UKI"
+grep -Fxq '/GRUB (recovery)' "$esp/limine.conf" || fail "M4 preserves the prior recovery entry"
+[[ $(cat "$esp/EFI/BOOT/grub-aa64.efi") == 'prior recovery EFI' ]] || fail "M4 preserves the prior recovery EFI file"
+[[ -s $esp/EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi ]] || fail "M4 builds a fallback UKI"
+cp "$esp/limine.conf" "$test_tmp/m4-prior-menu"
+cp "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/m4-prior-loader"
+rm "$esp/EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi"
+if TEST_KERNEL=linux-omarchy-m4-research TEST_NO_FALLBACK=1 run; then
+  fail "M4 activation rejects an absent fallback UKI"
+fi
+cmp -s "$esp/limine.conf" "$test_tmp/m4-prior-menu" && cmp -s "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/m4-prior-loader" ||
+  fail "M4 activation failure restores the prior menu and loader"
+pass "M4 Limine activation retains recovery artifacts and refuses a missing fallback UKI"

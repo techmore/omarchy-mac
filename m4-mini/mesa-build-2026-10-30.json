@@ -1,0 +1,20 @@
+{
+  "scope": "local ARM64 Mesa build and software/compiler tests; no M4 GPU or Arch package test",
+  "repository": "https://github.com/techmore/mesa",
+  "commit": "96a24da3f2114aa5a771841a6a0759ecccd9d83e",
+  "source_archive_sha256": "a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778",
+  "source_verification": "Eleven reviewed Mesa6 source hashes and DRM UAPI hash match the previous M-series receipt.",
+  "uapi_sha256": "eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015",
+  "toolchain": "Ubuntu 24.04 ARM64 VM, GCC 13.3, LLVM 18.1.3, Meson 1.7.2",
+  "options": ["platforms=x11,wayland", "gallium-drivers=asahi,llvmpipe", "vulkan-drivers=asahi", "llvm=enabled", "build-tests=true", "glvnd=enabled"],
+  "validation": ["1650 build steps completed", "five AGX/disassembler test groups passed", "llvmpipe OpenGL software smoke passed", "four NIR cases and three negative controls passed", "eight rodata helper cases and negative control passed", "24 Apple9 sampler comparisons and four rejection controls passed"],
+  "launcher": "The existing M-series private-prefix launcher was tested separately after the archive was made: llvmpipe passed, existing ASAHI_MESA_DEBUG flags were preserved with nocompress added, and the temporary Vulkan manifest referred to the staged library. The archive does not contain the launcher.",
+  "archive_sha256": "72fce7c888cdc5a6c10adbefd7d27c6803c84fbc734aeb1e12037c22bb8729b5",
+  "libraries_sha256": {
+    "libvulkan_asahi.so": "4483ebeb2a449158dad36b2c1e091936d5a537337221d645e8d3bb7b501c5cf0",
+    "libgallium-26.3.0-devel.so": "027bd149d5a228547d981657057d86657bcc71e7f929757acc9609d57ac553ed",
+    "libEGL_mesa.so.0.0.0": "ad11bf90d03622a1f620e61a570add1228b643ef246b938ec6adf186c71131c4",
+    "libGLX_mesa.so.0.0.0": "e7cd94a4665596f08f2c6dfa2817ca3729a6960ce528fc17c7bbe726a6481570"
+  },
+  "limitations": ["research staging prefix, not an Arch package", "no M4 GPU execution", "no HDMI or Vulkan conformance testing"]
+}

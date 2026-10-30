@@ -101,6 +101,18 @@ if [[ "$1" == "-a" && -f "$2" ]]; then
   exit 0
 fi
 [[ "$1" == "-l" && -f "$2" ]] || exit 1
+if [[ $2 == */m4-uki-fallback.img ]]; then
+  cat "$TEST_UKI_FALLBACK_INITRAMFS_LIST"
+  exit 0
+fi
+if [[ $2 == */m4-uki.img ]]; then
+  cat "$TEST_UKI_INITRAMFS_LIST"
+  exit 0
+fi
+if [[ $2 == *-fallback.img ]]; then
+  cat "$TEST_FALLBACK_INITRAMFS_LIST"
+  exit 0
+fi
 cat "$TEST_INITRAMFS_LIST"
 SH
 # mount copies what it would mount and remembers whether that mount is
@@ -270,8 +282,8 @@ write_boot_bin() {
   done
   mkdir -p "$esp/m1n1"
   {
-    cat "$root/usr/lib/asahi-boot/m1n1.bin" "${paths[@]}"
-    gzip -c "$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
+    cat "$root$m1n1_src" "${paths[@]}"
+    gzip -c "$root$uboot_src"
     printf 'chosen.asahi,efi-system-partition=1234\ndisplay=2560x1600\nmitigations=off\n'
   } >"$esp/m1n1/boot.bin"
 }
@@ -280,7 +292,18 @@ write_boot_bin() {
 system() {
   local kernel=$1 bootloader=m1n1-aurora
   shift
-  [[ $kernel == linux-aurora ]] && kver=6.17.0-aurora1-ARCH || { kver=6.14.8-asahi1-1-ARCH bootloader=m1n1; }
+  m1n1_src=/usr/lib/asahi-boot/m1n1.bin
+  uboot_src=/usr/lib/asahi-boot/u-boot-nodtb.bin
+  case $kernel in
+    linux-aurora) kver=6.17.0-aurora1-ARCH ;;
+    linux-asahi) kver=6.14.8-asahi1-1-ARCH bootloader=m1n1 ;;
+    linux-omarchy-m4-research)
+      kver=7.1.13-omarchy-m4-r7-ARCH
+      bootloader=m1n1-omarchy-m4-research
+      m1n1_src=/usr/lib/asahi-boot/omarchy-m4-research/m1n1.bin
+      uboot_src=/usr/lib/asahi-boot/omarchy-m4-research/u-boot-nodtb.bin ;;
+    *) fail "unknown fixture kernel $kernel" ;;
+  esac
   modules="$root/usr/lib/modules/$kver"
   dtbs=()
   for name in "${@:-t6000-j314s.dtb t6020-j414s.dtb t8103-j274.dtb}"; do
@@ -299,8 +322,15 @@ system() {
   for dtb in "${dtbs[@]}"; do
     write_dtb "$dtb"
   done
-  printf 'm1n1 stage 2 from %s\n' "$bootloader" >"$root/usr/lib/asahi-boot/m1n1.bin"
-  printf 'u-boot\n' >"$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
+  mkdir -p "$(dirname "$root$m1n1_src")"
+  printf 'm1n1 stage 2 from %s\n' "$bootloader" >"$root$m1n1_src"
+  printf 'u-boot\n' >"$root$uboot_src"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    mkdir -p "$root/proc/device-tree" "$root/etc/default"
+    printf 'apple,j773g\0apple,t8132\0apple,arm-platform\0' >"$root/proc/device-tree/compatible"
+    printf 'M1N1="%s"\nU_BOOT="%s"\nDTBS="/usr/lib/modules/%s/dtbs/apple/t8132-j773g.dtb"\n' \
+      "$m1n1_src" "$uboot_src" "$kver" >"$root/etc/default/update-m1n1"
+  fi
   printf '# options\nchosen.asahi,efi-system-partition=1234\ndisplay=2560x1600\n   mitigations=off\nunknown=1\n\n' >"$root/etc/m1n1.conf"
   write_update_m1n1
   printf '%s\n' "$kernel" "$kernel-headers" "$bootloader" uboot-asahi >"$test_tmp/files/installed"
@@ -308,10 +338,66 @@ system() {
     printf '/usr/\n/usr/lib/\n/usr/lib/modules/\n/usr/lib/modules/%s/\n/usr/lib/modules/%s/vmlinuz\n' "$kver" "$kver"
     printf '/usr/lib/modules/%s/dtbs/\n' "$kver"
     printf '%s\n' "${dtbs[@]}"
+    if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+      for name in nvme-apple nvme-core; do
+        printf '/usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name"
+      done
+      printf '/usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver"
+      for name in dm-mod dm-bufio dm-crypt dm-integrity; do
+        printf '/usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name"
+      done
+      printf '/usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/apple/appledrm.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi_m4.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver"
+      printf '/usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver"
+    fi
   } >"$test_tmp/files/$kernel"
-  printf '/usr/lib/asahi-boot/\n/usr/lib/asahi-boot/m1n1.bin\n' >"$test_tmp/files/$bootloader"
+  printf '/usr/lib/asahi-boot/\n%s\n%s\n' "$m1n1_src" "$uboot_src" >"$test_tmp/files/$bootloader"
   printf 'usr/lib/modules/%s/kernel/drivers/gpu/drm/apple/appledrm.ko.zst\nusr/bin/init\n' "$kver" >"$test_tmp/initramfs"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    for name in nvme-apple nvme-core; do
+      printf 'usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
+    done
+    printf 'usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver" >>"$test_tmp/initramfs"
+    for name in dm-mod dm-bufio dm-crypt dm-integrity; do
+      printf 'usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
+    done
+    printf 'usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi_m4.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver" >>"$test_tmp/initramfs"
+    printf 'usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver" >>"$test_tmp/initramfs"
+    cat >"$modules/modules.dep" <<'DEPS'
+kernel/drivers/nvme/host/nvme-apple.ko: kernel/drivers/nvme/host/nvme-core.ko kernel/drivers/soc/apple/apple-sart.ko
+kernel/drivers/nvme/host/nvme-core.ko:
+kernel/drivers/soc/apple/apple-sart.ko:
+kernel/drivers/md/dm-mod.ko:
+kernel/drivers/md/dm-bufio.ko: kernel/drivers/md/dm-mod.ko
+kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko kernel/lib/crypto/libmd5.ko
+kernel/drivers/md/dm-integrity.ko: kernel/drivers/md/dm-bufio.ko kernel/crypto/async_tx/async_xor.ko
+kernel/fs/btrfs/btrfs.ko:
+kernel/drivers/gpu/drm/apple/appledrm.ko:
+kernel/drivers/gpu/drm/asahi/asahi_m4.ko:
+kernel/drivers/phy/apple/phy-apple-dptx.ko:
+kernel/lib/crypto/libmd5.ko:
+kernel/crypto/async_tx/async_xor.ko: kernel/crypto/async_tx/async_tx.ko kernel/lib/raid/xor/xor.ko
+kernel/crypto/async_tx/async_tx.ko:
+kernel/lib/raid/xor/xor.ko:
+DEPS
+    cp "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
+    printf 'fallback initramfs\n' >"$root/boot/initramfs-$kernel-fallback.img"
+  fi
   write_boot_bin "${dtbs[@]}"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    printf 'saved stage 2 from the previous system\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+    sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+  fi
   pkgver=6.14.8-1
   archive_sha=$(printf '%064d' 1)
   if [[ $kernel == linux-aurora ]]; then
@@ -335,6 +421,9 @@ run_check() {
     TEST_CALLS="$calls" \
     TEST_FILES="$test_tmp/files" \
     TEST_INITRAMFS_LIST="$test_tmp/initramfs" \
+    TEST_FALLBACK_INITRAMFS_LIST="$test_tmp/initramfs-fallback" \
+    TEST_UKI_INITRAMFS_LIST="$test_tmp/initramfs-uki" \
+    TEST_UKI_FALLBACK_INITRAMFS_LIST="$test_tmp/initramfs-uki-fallback" \
     TEST_MOUNTS="$mounts" \
     TEST_PARTUUID=$partuuid \
     TEST_ESP_DEVICE="$esp_device" \
@@ -484,6 +573,144 @@ run_check
 expect_fail "linux-aurora with the Asahi m1n1" "linux-aurora boots with m1n1-aurora, but m1n1-aurora is not installed"
 pass "a missing, unknown, ambiguous or mismatched kernel and bootloader pair fails"
 
+# M4 research uses a private loader and exact J773g tree. A known-good kernel
+# and loader may remain installed, but the selected menu and active stage 2
+# still have to match the research kernel and its package-owned files.
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+run_check
+expect_fail "the M4 GRUB chain until its default selection is supported" "M4 GRUB default selection is not verified"
+printf 'linux-aurora\nm1n1-aurora\n' >>"$test_tmp/files/installed"
+run_check
+expect_fail "two installed kernels without an explicit choice" "cannot tell which kernel boots"
+run_check linux-omarchy-m4-research
+expect_fail "M4 selected explicitly beside the known-good kernel on unverified GRUB" "M4 GRUB default selection is not verified"
+run_check --boot-chain
+expect_fail "the first M4 GRUB reference is not a verified default" "M4 GRUB default selection is not verified"
+printf 'apple,j713g\0apple,t8132\0' >"$root/proc/device-tree/compatible"
+run_check linux-omarchy-m4-research
+expect_fail "a different M4 device" "requires the M4 Mac mini (apple,j773g)"
+
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without Apple NVMe" "missing required M4 storage module nvme-apple"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/btrfs\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without Btrfs" "missing required M4 storage module btrfs"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/phy-apple-dptx\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without the HDMI PHY" "missing required M4 display module phy-apple-dptx"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without the NVMe SART dependency" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without dm-crypt" "missing required M4 storage module dm-crypt"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/libmd5\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs missing a dm-crypt dependency" "missing from image: kernel/lib/crypto/libmd5.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/async_xor\.ko/d' "$test_tmp/files/linux-omarchy-m4-research"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel missing an owned dm-integrity dependency" "not owned by the kernel package: kernel/crypto/async_tx/async_xor.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/async_tx\.ko:/d' "$modules/modules.dep"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel with incomplete transitive dependency metadata" "no modules.dep entry for kernel/crypto/async_tx/async_tx.ko"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+rm "$modules/modules.dep"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel without module dependency metadata" "no readable modules.dep"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-bufio\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without the dm-integrity buffer dependency" "missing required M4 storage module dm-bufio"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-integrity\.ko/d' "$test_tmp/files/linux-omarchy-m4-research"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel without dm-integrity" "no built-in or package-owned dm-integrity driver"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+rm "$root/boot/initramfs-linux-omarchy-m4-research-fallback.img"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 system without a fallback image" "fallback.img cannot be listed"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback without Apple NVMe" "missing required M4 storage module nvme-apple"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback without dm-integrity" "missing required M4 storage module dm-integrity"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i "s/$kver/another-release/g" "$test_tmp/initramfs-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback for a different kernel" "does not hold the $kver modules"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+for name in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity; do
+  sed -i "/$name\\.ko/d" "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
+  printf 'kernel/drivers/apple/%s.ko\n' "$name" >>"$modules/modules.builtin"
+done
+run_check linux-omarchy-m4-research
+expect_fail "built-in M4 storage drivers pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+for file in "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"; do
+  sed -i '/dm-mod\.ko/d' "$file"
+done
+sed -i 's# kernel/drivers/md/dm-mod\.ko##g; /kernel\/drivers\/md\/dm-mod\.ko:/d' "$modules/modules.dep"
+printf 'kernel/drivers/md/dm-mod.ko\n' >>"$modules/modules.builtin"
+run_check linux-omarchy-m4-research
+expect_fail "a built-in device mapper with modular encryption drivers" "M4 GRUB default selection is not verified"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+for file in "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback" "$modules/modules.dep"; do
+  sed -i -e 's/nvme-apple\.ko/nvme_apple.ko.zst/g' -e 's/nvme-core\.ko/nvme_core.ko.xz/g' \
+    -e 's/apple-sart\.ko/apple_sart.ko.gz/g' -e 's/libmd5\.ko/libmd5.ko.zst/g' "$file"
+done
+run_check linux-omarchy-m4-research
+expect_fail "compressed storage modules pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+rm "$esp/m1n1/boot.omarchy-m4-recovery.bin"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 chain with no saved stage 2" "no saved prior stage 2"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+printf 'corruption\n' >>"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+run_check linux-omarchy-m4-research
+expect_fail "a corrupted saved stage 2" "does not match its SHA-256 record"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+cp "$esp/m1n1/boot.bin" "$esp/m1n1/boot.omarchy-m4-recovery.bin"
+sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+run_check linux-omarchy-m4-research
+expect_fail "a saved stage 2 identical to the active chain" "identical to the current research chain"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+printf 'M1N1_UPDATE_DISABLED=1\n' >>"$root/etc/default/update-m1n1"
+run_check --boot-chain linux-omarchy-m4-research
+expect_fail "an M4 chain that skips m1n1 verification" "M1N1_UPDATE_DISABLED prevents verifying"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+printf 'other u-boot\n' >"$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
+printf 'U_BOOT=/usr/lib/asahi-boot/u-boot-nodtb.bin\n' >>"$root/etc/default/update-m1n1"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 chain pointed at the unrelated U-Boot" "requires its private m1n1 and U-Boot paths"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '\|u-boot-nodtb.bin|d' "$test_tmp/files/m1n1-omarchy-m4-research"
+run_check linux-omarchy-m4-research
+expect_fail "M4 U-Boot not owned by its loader package" "U_BOOT $uboot_src is not owned by"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+write_dtb "/usr/lib/modules/$kver/dtbs/apple/t8132-other.dtb"
+printf '/usr/lib/modules/%s/dtbs/apple/t8132-other.dtb\n' "$kver" >>"$test_tmp/files/linux-omarchy-m4-research"
+printf 'DTBS="/usr/lib/modules/%s/dtbs/apple/t8132-other.dtb"\n' "$kver" >>"$root/etc/default/update-m1n1"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 bundle using another owned tree" "must use exactly its J773g device tree"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+{ printf 'linux /vmlinuz-linux-other root=UUID=x\n'; cat "$root/boot/grub/grub.cfg"; } >"$test_tmp/grub-new"
+mv "$test_tmp/grub-new" "$root/boot/grub/grub.cfg"
+run_check linux-omarchy-m4-research
+expect_fail "another kernel ahead of M4 in GRUB" "the first GRUB kernel reference is not linux-omarchy-m4-research"
+pass "M4 boot checking requires the mini, matching storage image, private loader, J773g tree and selected menu"
+
 # The ESP is only ever read through a read-only mount.
 system linux-aurora
 mkdir -p "$root/proc/device-tree/chosen" "$esp_device"
@@ -494,6 +721,14 @@ run_check
 expect_pass "an ESP named in the device tree and not mounted"
 grep -Eq "^mount -o ro PARTUUID=$partuuid $root/run/omarchy-esp\.[A-Za-z0-9]{6}\$" "$calls" ||
   fail "an unmounted ESP is mounted read-only by its PARTUUID" "$(cat "$calls")"
+mv "$root/proc/device-tree/chosen/asahi,efi-system-partition" "$root/proc/device-tree/chosen/gravity,efi-system-partition"
+run_check
+expect_pass "an ESP named by Gravity's device-tree property"
+printf '11111111-0001\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
+run_check
+expect_fail "conflicting Asahi and Gravity ESP names" "system ESP identifiers disagree"
+rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
+mv "$root/proc/device-tree/chosen/gravity,efi-system-partition" "$root/proc/device-tree/chosen/asahi,efi-system-partition"
 TEST_RO_REFUSED=1 run_check
 expect_fail "an ESP the kernel will not mount read-only" "cannot mount the system ESP (PARTUUID=$partuuid) read-only"
 (( $(grep -c '^mount ' "$calls") == 1 )) || fail "a refused read-only mount is not retried writable" "$(cat "$calls")"
@@ -764,9 +999,14 @@ pass "missing sync database warnings are not altered package files"
 # filesystem, and the hash-verified UKI carries the installed kernel.
 cat >"$stub_bin/objcopy" <<'SH'
 #!/bin/bash
-# Fixture UKIs are the kernel bytes followed by a marker: .linux is the file.
-[[ $* == "-O binary --only-section=.linux "* ]] || exit 1
-cp "$4" "$5"
+# Fixture UKIs carry the kernel bytes followed by a marker.
+case "$*" in
+  '-O binary --only-section=.linux '*) cp "$4" "$5" ;;
+  '-O binary --only-section=.initrd '*)
+    ! grep -q 'broken-initrd' "$4" || exit 1
+    printf 'embedded initramfs\n' >"$5" ;;
+  *) exit 1 ;;
+esac
 SH
 chmod +x "$stub_bin/objcopy"
 limine_system() {
@@ -786,6 +1026,91 @@ limine_system() {
     "$(b2sum "$uki" | cut -d' ' -f1)" "$cmdline" >"$root$limine_esp/limine.conf"
   rm -f "$root/boot/grub/grub.cfg"
 }
+
+m4_limine_system() {
+  local kernel=linux-omarchy-m4-research cmdline='root=UUID=r rw rootflags=subvol=@ quiet' uki fallback
+  system "$kernel" apple/t8132-j773g.dtb
+  mkdir -p "$root/var/lib/omarchy" "$root/usr/share/limine" "$esp/EFI/Linux" "$esp/EFI/BOOT"
+  : >"$root/var/lib/omarchy/limine.enabled"
+  printf 'ESP_PATH="/boot/efi"\nENABLE_UKI=yes\n' >"$root/etc/default/limine"
+  printf 'UUID=r / btrfs rw,subvol=/@ 0 0\n' >"$root/etc/fstab"
+  printf 'LIMINE\n' >"$root/usr/share/limine/BOOTAA64.EFI"
+  cp "$root/usr/share/limine/BOOTAA64.EFI" "$esp/EFI/BOOT/BOOTAA64.EFI"
+  uki="$esp/EFI/Linux/omarchy_$kernel.efi"
+  fallback="$esp/EFI/Linux/omarchy_$kernel-fallback.efi"
+  { cat "$modules/vmlinuz"; printf 'initrd\n'; } >"$uki"
+  { cat "$modules/vmlinuz"; printf 'fallback initrd\n'; } >"$fallback"
+  printf 'default_entry: 2\n/+Omarchy\n  //%s\n    protocol: efi\n    path: boot():/EFI/Linux/omarchy_%s.efi#%s\n    cmdline: %s\n  //%s-fallback\n    protocol: efi\n    path: boot():/EFI/Linux/omarchy_%s-fallback.efi#%s\n    cmdline: %s\n' \
+    "$kernel" "$kernel" "$(b2sum "$uki" | cut -d' ' -f1)" "$cmdline" \
+    "$kernel" "$kernel" "$(b2sum "$fallback" | cut -d' ' -f1)" "$cmdline" >"$esp/limine.conf"
+  cp "$test_tmp/initramfs" "$test_tmp/initramfs-uki"
+  cp "$test_tmp/initramfs-fallback" "$test_tmp/initramfs-uki-fallback"
+}
+
+m4_limine_system
+run_check linux-omarchy-m4-research
+expect_pass "M4 Limine UKIs with matching embedded storage drivers"
+m4_limine_system
+printf 'M1N1_UPDATE_DISABLED=1\n' >>"$root/etc/default/update-m1n1"
+run_check linux-omarchy-m4-research
+expect_fail "M4 with m1n1 updates disabled" "M1N1_UPDATE_DISABLED prevents verifying the M4 research boot chain"
+! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest an unqualified updater"
+m4_limine_system
+printf 'corruption\n' >>"$esp/m1n1/boot.bin"
+run_check linux-omarchy-m4-research
+expect_fail "M4 with a mismatched active stage 2" "does not match the M4 research chain"
+! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest rebuilding a mismatched stage 2"
+m4_limine_system
+printf 'linux-aurora\nm1n1-aurora\n' >>"$test_tmp/files/installed"
+run_check --boot-chain
+expect_pass "M4 Limine selected beside the known-good kernel"
+run_check linux-omarchy-m4-research
+expect_pass "M4 Limine explicitly selected beside the known-good kernel"
+m4_limine_system
+sed -i 's/default_entry: 2/default_entry: 3/' "$esp/limine.conf"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 Limine menu that defaults to another entry" "M4 Limine default does not select the research kernel"
+m4_limine_system
+sed -i '1i remember_last_entry: yes' "$esp/limine.conf"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 Limine menu that remembers another entry" "M4 Limine default does not select the research kernel"
+m4_limine_system
+sed -i '/^\/+Omarchy/i /Other OS' "$esp/limine.conf"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 Limine menu with another entry ahead of Omarchy" "M4 Limine default does not select the research kernel"
+m4_limine_system
+sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs-uki"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 main UKI without Apple NVMe" "the M4 default UKI is missing required M4 storage module nvme-apple"
+m4_limine_system
+sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI without SART" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
+m4_limine_system
+sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs-uki"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 main UKI without dm-crypt" "the M4 default UKI is missing required M4 storage module dm-crypt"
+m4_limine_system
+sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI without dm-integrity" "the M4 fallback UKI is missing required M4 storage module dm-integrity"
+m4_limine_system
+sed -i '/async_tx\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI missing a transitive integrity dependency" "missing from image: kernel/crypto/async_tx/async_tx.ko"
+m4_limine_system
+sed -i '/dm-mod\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI without device mapper" "the M4 fallback UKI is missing required M4 storage module dm-mod"
+m4_limine_system
+printf 'corruption\n' >>"$esp/EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi"
+run_check linux-omarchy-m4-research
+expect_fail "a corrupted M4 fallback UKI" "fallback UKI does not match its menu hash"
+m4_limine_system
+sed -i '$s/root=UUID=r/root=UUID=wrong/' "$esp/limine.conf"
+run_check linux-omarchy-m4-research
+expect_fail "a fallback UKI with a different root command line" "fallback entry does not carry the checked kernel command line"
+pass "M4 Limine verifies the two embedded initramfs images, fallback hash and command line"
 
 limine_system /boot/efi 'UUID=r / btrfs rw,subvol=/@ 0 0' 'root=UUID=r rw rootflags=subvol=@,x-systemd.device-timeout=0 quiet'
 run_check

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Prepare a local M4 Gravity-installer adaptation; it does not install anything."""
+import argparse
+import hashlib
+import io
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+GRAVITY_COMMIT = '6420623289fe7544cb8589b658355e57f0290fcc'
+STAGE1_SHA = 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab'
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise ValueError('Gravity installer source does not match the pinned integration points')
+    return text.replace(old, new, 1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--gravity-checkout', type=Path, required=True)
+    parser.add_argument('--stage1', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.gravity_checkout.is_symlink() or not args.gravity_checkout.is_dir():
+            raise ValueError('Gravity checkout must be an unlinked directory')
+        checkout = args.gravity_checkout.resolve(strict=True)
+        head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+        if head != GRAVITY_COMMIT:
+            raise ValueError('Gravity checkout is not at the pinned M4 installer commit')
+        if args.stage1.is_symlink() or not args.stage1.is_file() or hashlib.sha256(args.stage1.read_bytes()).hexdigest() != STAGE1_SHA:
+            raise ValueError('the locked M4 stage-one binary is required')
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('output must be a new directory')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        if output == checkout or output in checkout.parents or checkout in output.parents:
+            raise ValueError('output must be separate from the Gravity checkout')
+        archive = subprocess.check_output(['git', '-C', str(checkout), 'archive', '--format=tar', GRAVITY_COMMIT])
+        output.mkdir()
+        (output / 'INCOMPLETE').write_text('Incomplete installer adaptation; do not run.\n')
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+            source.extractall(output, filter='data')
+        helper = ROOT / 'm4-mini/gravity-installer/omarchy_m4.py'
+        shutil.copyfile(helper, output / 'src/omarchy_m4.py')
+        shutil.copyfile(ROOT / 'scripts/m4-mini-recovery-capsule', output / 'src/omarchy_m4_recovery.py')
+        shutil.copyfile(args.stage1, output / 'omarchy-m4-stage1.bin')
+        source_path = output / 'src/osinstall.py'
+        source = source_path.read_text()
+        source = replace_once(source, 'import m1n1\n', 'import m1n1\nimport omarchy_m4\n')
+        source = replace_once(source, '        if not package:\n            return\n',
+                              '        if not package:\n            if self.template.get("omarchy_m4"):\n                raise ValueError("Omarchy M4 requires an image package")\n            return\n')
+        source = replace_once(source, '        self.flush_progress()\n        logging.info(f"OS package opened")\n',
+                              '        if self.template.get("omarchy_m4"):\n'
+                              '            parts = self.template["partitions"]\n'
+                              '            root_size = self.align(psize(parts[-1]["size"]))\n'
+                              '            boot_size = self.align(psize(parts[1]["size"])) if len(parts) == 3 else None\n'
+                              '            omarchy_m4.preflight(self.template, self.pkg, "boot/m1n1.bin", root_size, boot_size)\n'
+                              '            self.omarchy_m4_recovery_uuid = omarchy_m4.recovery_from_environment()\n'
+                              '        self.flush_progress()\n        logging.info(f"OS package opened")\n')
+        source = replace_once(source, '        m1n1_vars = []\n        if self.efi_part:\n',
+                              '        if self.template.get("omarchy_m4"):\n'
+                              '            if self.efi_part is None:\n                raise ValueError("Omarchy M4 requires a new EFI partition")\n'
+                              '            recovery_uuid = getattr(self, "omarchy_m4_recovery_uuid", None)\n'
+                              '            if not recovery_uuid or self.efi_part.uuid.lower() == recovery_uuid:\n'
+                              '                raise ValueError("Omarchy EFI must be separate from the verified Gravity recovery EFI")\n'
+                              '            omarchy_m4.check_stage1(os.path.join("boot", boot_object))\n'
+                              '            omarchy_m4.configure_stage2(self.dutil.mount(self.efi_part.name), self.efi_part.uuid)\n'
+                              '        m1n1_vars = []\n        if self.efi_part:\n')
+        source = replace_once(source,
+                              '            m1n1_vars.append(f"chosen.gravity,efi-system-partition={self.efi_part.uuid.lower()}")\n',
+                              '            m1n1_vars.append(f"chosen.gravity,efi-system-partition={self.efi_part.uuid.lower()}")\n'
+                              '            if self.template.get("omarchy_m4"):\n'
+                              '                m1n1_vars.append(f"chosen.asahi,efi-system-partition={self.efi_part.uuid.lower()}")\n')
+        source_path.write_text(source)
+        main_path = output / 'src/main.py'
+        source = main_path.read_text()
+        source = replace_once(source, '    def action_install_into_container(self, avail_parts):\n        template = self.choose_os()\n',
+                              '    def action_install_into_container(self, avail_parts):\n        template = self.choose_os()\n'
+                              '        if template.get("omarchy_m4"):\n'
+                              '            p_error("Omarchy M4 requires a new installation in free space; existing entries are not reused.")\n'
+                              '            return True\n')
+        anchor = '    def action_wipe(self):'
+        before, sep, after = source.partition(anchor)
+        if not sep:
+            raise ValueError('Gravity installer wipe entry point is missing')
+        wipe, separator, rest = after.partition('    def action_install_into_free(')
+        if not separator:
+            raise ValueError('Gravity installer free-space entry point is missing')
+        wipe = replace_once(wipe, '        template = self.choose_os()\n',
+                             '        template = self.choose_os()\n'
+                             '        if template.get("omarchy_m4"):\n'
+                             '            p_error("Omarchy M4 cannot use whole-disk wipe; install into free space instead.")\n'
+                             '            return True\n')
+        free_action = '    def action_install_into_free(self, avail_free):\n        template = self.choose_os()\n\n        self.osins = osinstall.OSInstaller(self.dutil, self.data, template)\n        self.osins.load_package()\n'
+        guarded_free_action = free_action + (
+            '        if template.get("omarchy_m4"):\n'
+            '            matches = [part for part in self.parts if not part.free and part.type == "EFI"\n'
+            '                       and part.uuid.lower() == self.osins.omarchy_m4_recovery_uuid]\n'
+            '            if len(matches) != 1:\n'
+            '                p_error("The captured Gravity recovery EFI was not uniquely found on this disk.")\n'
+            '                return True\n'
+            '            omarchy_m4.verify_live_gravity_esp(self.dutil.mount(matches[0].name),\n'
+            '                os.environ["OMARCHY_M4_GRAVITY_STAGE2_SHA256"])\n')
+        source_for_main = before + sep + wipe + separator + rest
+        source_for_main = replace_once(source_for_main, 'import system, osenum, stub, diskutil, osinstall, gravity_firmware, m1n1\n',
+                                       'import system, osenum, stub, diskutil, osinstall, gravity_firmware, m1n1, omarchy_m4\n')
+        updated = replace_once(source_for_main, free_action, guarded_free_action)
+        main_path.write_text(updated)
+        receipt = {'gravity_commit': GRAVITY_COMMIT, 'stage1_sha256': STAGE1_SHA,
+                   'helper_sha256': hashlib.sha256(helper.read_bytes()).hexdigest(),
+                   'hardware_validated': False, 'ready_for_installation': False,
+                   'limitations': ['requires a separately built Omarchy ext4 root image and installer ZIP',
+                                   'requires installer packaging, actual device firmware and a captured Gravity recovery capsule',
+                                   'no Apple boot object, M4 boot or HDMI validation']}
+        (output / 'omarchy-m4-adaptation.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        (output / 'OMARCHY-M4-RESEARCH.txt').write_text(
+            'Local research adaptation only. Do not run on the mini. Build with M1N1_STAGE1 set to '
+            'omarchy-m4-stage1.bin only after the full Omarchy image and recovery path are qualified.\n')
+        (output / 'INCOMPLETE').unlink()
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-prepare-gravity-installer: {error}', file=sys.stderr)
+        return 1
+    print('Prepared a local Gravity installer adaptation; no device or boot entry was modified.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

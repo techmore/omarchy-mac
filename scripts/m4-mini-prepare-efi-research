@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Assemble an offline M4 ESP proposal, including UKIs and recovery copies.
+
+Run on an Arch ARM staging host. All inputs are already-captured files; this
+creates a new directory and never mounts an ESP or changes an Apple boot entry.
+"""
+import argparse
+import hashlib
+import json
+import re
+import runpy
+import shutil
+import struct
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
+KERNEL_SHA = '539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833'
+STAGE1_SHA = 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab'
+REQUIRED = ('nvme-apple', 'nvme-core', 'apple-sart', 'dm-mod', 'dm-bufio',
+            'dm-crypt', 'dm-integrity', 'btrfs', 'appledrm', 'asahi-m4', 'phy-apple-dptx')
+GUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def regular(path):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        raise ValueError(f'required input is missing, empty or linked: {path}')
+    return path.resolve(strict=True)
+
+
+def aarch64_pe(path):
+    with path.open('rb') as image:
+        header = image.read(64)
+        if len(header) != 64 or header[:2] != b'MZ':
+            raise ValueError(f'not an EFI executable: {path}')
+        offset = struct.unpack_from('<I', header, 60)[0]
+        image.seek(offset)
+        if image.read(6) != b'PE\0\0\x64\xaa':
+            raise ValueError(f'EFI executable is not AArch64: {path}')
+
+
+def module_name(path):
+    name = Path(path).name
+    name = re.sub(r'\.ko(?:\.(?:gz|xz|zst))?$', '', name)
+    return name.replace('_', '-')
+
+
+def check_initramfs(image, modules, dependencies, builtins):
+    listing = subprocess.check_output(['lsinitcpio', '-l', str(image)], text=True)
+    prefix = f'usr/lib/modules/{KVER}/'
+    present = {line.removeprefix('./') for line in listing.splitlines()}
+    present_modules = {re.sub(r'\.(?:gz|xz|zst)$', '', name[len(prefix):])
+                       for name in present if name.startswith(prefix)}
+    for needed in REQUIRED:
+        candidates = [path for path in modules if module_name(path) == needed]
+        if not candidates and needed in builtins:
+            continue
+        if len(candidates) != 1:
+            raise ValueError(f'kernel package does not identify one {needed} module')
+        queue, seen = candidates[:], set()
+        while queue:
+            path = queue.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            if path not in dependencies or path not in present_modules:
+                raise ValueError(f'{image.name} is missing module or dependency: {path}')
+            queue.extend(dependencies[path])
+    for path in ('usr/bin/cryptsetup', 'usr/bin/cpio', 'usr/bin/btrfs',
+                 'usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh',
+                 'usr/lib/systemd/system/omarchy-vendorfw-initrd.service',
+                 'usr/lib/systemd/system-generators/systemd-cryptsetup-generator'):
+        if path not in present:
+            raise ValueError(f'{image.name} is missing {path}')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('bundle', 'capsule', 'target-esp-snapshot', 'm1n1-config', 'cmdline',
+                 'os-release', 'initramfs-default', 'initramfs-fallback', 'output'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    for name in ('recovery-esp-partuuid', 'recovery-stage2-sha256', 'target-esp-partuuid',
+                 'target-stage2-sha256'):
+        parser.add_argument('--' + name, required=True)
+    parser.add_argument('--limine-efi', type=Path, default=Path('/usr/share/limine/BOOTAA64.EFI'))
+    parser.add_argument('--uefi-stub', type=Path, default=Path('/usr/lib/systemd/boot/efi/linuxaa64.efi.stub'))
+    parser.add_argument('--ukify', default='/usr/lib/systemd/ukify')
+    args = parser.parse_args()
+    try:
+        recovery = runpy.run_path(str(ROOT / 'scripts/m4-mini-recovery-capsule'))
+        recovery_esp, recovery_sha = recovery['expected_identity'](args.recovery_esp_partuuid, args.recovery_stage2_sha256)
+        target_esp, target_sha = recovery['expected_identity'](args.target_esp_partuuid, args.target_stage2_sha256)
+        if recovery_esp == target_esp:
+            raise ValueError('Omarchy and Gravity must use different system ESP identifiers')
+        recovery['verify'](args.capsule, recovery_esp, recovery_sha)
+        if args.bundle.is_symlink() or not args.bundle.is_dir() or args.target_esp_snapshot.is_symlink() or not args.target_esp_snapshot.is_dir():
+            raise ValueError('bundle and target ESP snapshot must be unlinked directories')
+        bundle, snapshot = args.bundle.resolve(strict=True), args.target_esp_snapshot.resolve(strict=True)
+        target_files = recovery['files_under'](snapshot)
+        for name in ('m1n1/boot.bin', 'EFI/BOOT/BOOTAA64.EFI', 'vendorfw/firmware.cpio'):
+            if name not in target_files or (snapshot / name).stat().st_size == 0:
+                raise ValueError(f'target ESP snapshot is missing {name}')
+        if digest(snapshot / 'm1n1/boot.bin') != target_sha:
+            raise ValueError('target ESP stage-two hash does not match the independently supplied hash')
+        for path in (args.m1n1_config, args.cmdline, args.os_release, args.initramfs_default,
+                     args.initramfs_fallback, args.limine_efi, args.uefi_stub):
+            regular(path)
+        aarch64_pe(args.limine_efi)
+        aarch64_pe(args.uefi_stub)
+        command_line = args.cmdline.read_text(encoding='ascii').strip()
+        if not command_line or any(ord(c) < 32 or ord(c) > 126 for c in command_line):
+            raise ValueError('kernel command line must be one printable ASCII line')
+        roots = [word[10:].lower() for word in command_line.split() if word.startswith('root=UUID=')]
+        if len(roots) != 1 or not GUID.fullmatch(roots[0]) or sum(word.startswith('root=') for word in command_line.split()) != 1:
+            raise ValueError('kernel command line must contain exactly one root=UUID=<filesystem UUID>')
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('a new output directory is required')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        filesystem = subprocess.check_output(['findmnt', '-n', '-T', str(output.parent), '-o', 'FSTYPE'], text=True).strip().lower()
+        if not filesystem or filesystem in ('vfat', 'fat', 'msdos', 'exfat'):
+            raise ValueError('output must be on a staging filesystem, not an EFI system partition')
+        protected = (bundle, args.capsule.resolve(strict=True), snapshot)
+        if any(output == p or output in p.parents or p in output.parents for p in protected):
+            raise ValueError('output must be separate from every input tree')
+
+        package = regular(bundle / 'kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz')
+        stage1 = regular(bundle / 'bootloader/m1n1-stage1.bin')
+        if digest(stage1) != STAGE1_SHA:
+            raise ValueError('stage one does not match the locked M4 build')
+        if digest(package) != 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d':
+            raise ValueError('kernel package does not match the locked M4 build')
+        prefix = f'usr/lib/modules/{KVER}/'
+        with tarfile.open(package, 'r:*') as archive:
+            names = {m.name: m for m in archive.getmembers() if m.isfile()}
+            kernel = archive.extractfile(names[prefix + 'vmlinuz']).read()
+            if hashlib.sha256(kernel).hexdigest() != KERNEL_SHA:
+                raise ValueError('kernel image does not match the locked M4 build')
+            modules = {name[len(prefix):] for name in names if name.startswith(prefix) and name.endswith('.ko')}
+            builtins = {module_name(line) for line in archive.extractfile(names[prefix + 'modules.builtin']).read().decode().splitlines()}
+            dependencies = {}
+            for line in archive.extractfile(names[prefix + 'modules.dep']).read().decode().splitlines():
+                key, values = line.split(':', 1)
+                dependencies[key] = values.split()
+        for image in (args.initramfs_default, args.initramfs_fallback):
+            check_initramfs(image, modules, dependencies, builtins)
+        if digest(args.initramfs_default) == digest(args.initramfs_fallback):
+            raise ValueError('default and fallback initramfs images must be distinct')
+
+        output.mkdir(mode=0o700)
+        (output / 'INCOMPLETE').write_text('Do not use an incomplete boot proposal.\n')
+        handoff = output / 'stage1-handoff'
+        handoff.mkdir()
+        shutil.copyfile(stage1, handoff / 'm1n1-stage1.bin')
+        (handoff / 'm1n1-stage1-options.conf').write_text(
+            f'chosen.gravity,efi-system-partition={target_esp}\n'
+            f'chosen.asahi,efi-system-partition={target_esp}\nchainload={target_esp};m1n1/boot.bin\n')
+        (handoff / 'README.txt').write_text(
+            'Unsigned raw stage one and intended settings for an M4-capable Gravity-derived installer. '
+            'Gravity stage one uses the gravity ESP property; stage two also supplies the asahi property for Omarchy. '
+            'The installer must construct and personalize the Apple boot object; do not install this file directly.\n')
+        transition = output / 'transition'
+        subprocess.run([sys.executable, str(ROOT / 'scripts/m4-mini-prepare-boot-transition'),
+                        '--bundle', str(bundle), '--capsule', str(args.capsule), '--partuuid', recovery_esp,
+                        '--target-partuuid', target_esp, '--prior-stage2-sha256', recovery_sha,
+                        '--m1n1-config', str(args.m1n1_config), '--output', str(transition)], check=True)
+        if digest(transition / 'stage2-proposal.bin') == target_sha:
+            raise ValueError('the proposed stage two matches the previous target stage two')
+        backup = output / 'target-esp-recovery'
+        for name in target_files:
+            destination = backup / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(snapshot / name, destination)
+            if digest(destination) != digest(snapshot / name):
+                raise ValueError(f'target ESP snapshot changed during copy: {name}')
+        esp = output / 'esp-proposal'
+        (esp / 'm1n1').mkdir(parents=True)
+        (esp / 'EFI/BOOT').mkdir(parents=True)
+        (esp / 'EFI/Linux').mkdir(parents=True)
+        (esp / 'vendorfw').mkdir(parents=True)
+        shutil.copyfile(transition / 'stage2-proposal.bin', esp / 'm1n1/boot.bin')
+        shutil.copyfile(snapshot / 'm1n1/boot.bin', esp / 'm1n1/boot.omarchy-m4-recovery.bin')
+        (esp / 'm1n1/boot.omarchy-m4-recovery.sha256').write_text(target_sha + '\n')
+        shutil.copyfile(args.limine_efi, esp / 'EFI/BOOT/BOOTAA64.EFI')
+        shutil.copyfile(snapshot / 'vendorfw/firmware.cpio', esp / 'vendorfw/firmware.cpio')
+        kernel_path = output / 'kernel-image'
+        kernel_path.write_bytes(kernel)
+        for kind, image in (('default', args.initramfs_default), ('fallback', args.initramfs_fallback)):
+            suffix = '' if kind == 'default' else '-fallback'
+            uki = esp / f'EFI/Linux/omarchy_linux-omarchy-m4-research{suffix}.efi'
+            subprocess.run([args.ukify, 'build', '--config=/dev/null', f'--linux={kernel_path}', f'--initrd={image}',
+                            f'--cmdline=@{args.cmdline}', f'--os-release=@{args.os_release}',
+                            f'--stub={args.uefi_stub}', '--efi-arch=aa64', f'--uname={KVER}',
+                            f'--output={uki}'], check=True)
+            aarch64_pe(uki)
+            inspected = json.loads(subprocess.check_output([args.ukify, 'inspect', str(uki), '--json=short'], text=True))
+            if (inspected['.linux']['sha256'] != KERNEL_SHA or inspected['.initrd']['sha256'] != digest(image) or
+                    inspected['.cmdline']['text'].strip() != command_line):
+                raise ValueError(f'{kind} UKI sections do not match their inputs')
+        (esp / 'limine.conf').write_text(
+            'timeout: 3\ndefault_entry: 2\nremember_last_entry: no\ninterface_branding: Omarchy Bootloader\n'
+            '/+Omarchy\n//linux-omarchy-m4-research\n  protocol: efi\n'
+            '  path: boot():/EFI/Linux/omarchy_linux-omarchy-m4-research.efi\n'
+            '//linux-omarchy-m4-research-fallback\n  protocol: efi\n'
+            '  path: boot():/EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi\n')
+        inventory = {name: digest(backup / name) for name in target_files}
+        proposal_files = {str(path.relative_to(esp)): digest(path) for path in esp.rglob('*') if path.is_file()}
+        if proposal_files['vendorfw/firmware.cpio'] != inventory['vendorfw/firmware.cpio']:
+            raise ValueError('target firmware changed while assembling the ESP proposal')
+        receipt = {'scope': 'offline M4 ESP proposal and target ESP backup', 'kernel_release': KVER,
+                   'recovery_esp_partuuid': recovery_esp, 'target_esp_partuuid': target_esp,
+                   'target_previous_stage2_sha256': target_sha, 'gravity_capsule_manifest_sha256': digest(args.capsule / 'manifest.json'),
+                   'target_snapshot_files': inventory, 'proposed_esp_files': proposal_files,
+                   'target_firmware_sha256': inventory['vendorfw/firmware.cpio'],
+                   'stage1_sha256': digest(handoff / 'm1n1-stage1.bin'),
+                   'stage1_options_sha256': digest(handoff / 'm1n1-stage1-options.conf'),
+                   'target_stage1_pairing_verified': False, 'recovery_tested': False, 'ready_for_activation': False,
+                   'limitations': ['no Apple boot entry or stage-one pairing was created or verified',
+                                   'recovery copy preserves file bytes, not filesystem metadata or boot policy',
+                                   'target ESP and Gravity recovery snapshots have not been restored',
+                                   'initramfs module contents are checked by name, not byte-for-byte',
+                                   'initramfs, firmware and command line require target validation',
+                                   'the copied vendor firmware is machine-provided and may not be redistributable',
+                                   'no M4 boot or HDMI test']}
+        (output / 'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+        (output / 'DO-NOT-INSTALL.txt').write_text('Offline proposal only. Do not copy it to an ESP or treat it as verified recovery.\n')
+        (output / 'INCOMPLETE').unlink()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-prepare-efi-research: {error}', file=sys.stderr)
+        return 1
+    print('Prepared default and fallback M4 UKIs, Limine entries, stage two and recovery snapshot locally.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

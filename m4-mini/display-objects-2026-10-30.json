@@ -1,0 +1,25 @@
+{
+  "scope": "local ARM64 Linux object compilation only, not modules or hardware testing",
+  "kernel_commit": "6363990c4a4535b36dccd6c9a972e124861274fa",
+  "config_sha256": "e2ff7cabcf8f56abfc659d457a4b6bfdd7b2b358e3c7ea700dbbc0f0501a2710",
+  "environment": "Ubuntu 24.04 ARM64 local QEMU VM, clang 18.1.3, GNU ld, rustc 1.99.0 with rust-src and rustfmt, bindgen 0.71.1",
+  "command": "make -C <clean-source> O=<resolved-config-build-dir> ARCH=arm64 CC=clang LD=ld HOSTCC=clang -j2 drivers/gpu/drm/asahi/asahi_m4.o drivers/gpu/drm/apple/appledrm.o",
+  "result": "success; all three outputs are AArch64 ELF relocatable objects with debug information",
+  "objects_sha256": {
+    "drivers/gpu/drm/asahi/asahi_m4.o": "184edc9d1552f61dfc8d5cbcfcfe85cde8e3f174d36021d14c7e290b337465e4",
+    "drivers/gpu/drm/apple/appledrm.o": "45343c29359e602ffb1329cacfd29395e1c8bab3ec4151ce28fc810da8fbf42c",
+    "drivers/phy/apple/phy-apple-dptx.o": "374b248cb3fa34f60d68d45e12a9e116cc24107bf45922c8a583ecbd10d56d58"
+  },
+  "warnings": "Rust emitted unused-code, unused-import and deprecated-method warnings; the object build exited successfully.",
+  "not_verified": [
+    "module link and modpost",
+    "full kernel build",
+    "firmware handoff",
+    "boot",
+    "physical HDMI",
+    "GPU acceleration",
+    "reboot",
+    "recovery"
+  ],
+  "command_phy": "make -C <clean-source> O=<resolved-config-build-dir> ARCH=arm64 CC=clang LD=ld HOSTCC=clang -j2 drivers/phy/apple/phy-apple-dptx.o"
+}

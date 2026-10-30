@@ -1,18 +1,41 @@
 #!/bin/bash
 
 # omarchy:summary=Print the installed Apple Silicon kernel package.
+# omarchy:args=[--select kernel]
 # omarchy:hidden=true
 
 set -euo pipefail
 
+selected=""
+if (( $# )); then
+  if (( $# != 2 )) || [[ $1 != "--select" ]]; then
+    echo "Usage: omarchy-mac-kernel [--select kernel]" >&2
+    exit 2
+  fi
+  selected=$2
+  case $selected in
+    linux-asahi | linux-aurora | linux-omarchy-m4-research) ;;
+    *) echo "Unknown Apple Silicon kernel package: $selected" >&2; exit 1 ;;
+  esac
+fi
+
 # Query the target package database: uname can describe the builder's host,
 # and old module directories can survive a kernel-family replacement.
+# --select only resolves an installed package; it does not activate a kernel
+# or choose the device tree and m1n1 chain that must accompany it.
 packages=$(pacman -Qq) || {
   echo "Cannot read the installed kernel packages" >&2
   exit 1
 }
-mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora)$/')
-if (( ${#kernels[@]} == 1 )); then
+mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora|omarchy-m4-research)$/')
+if [[ -n $selected ]]; then
+  if printf '%s\n' "${kernels[@]}" | grep -Fxq -- "$selected"; then
+    printf '%s\n' "$selected"
+  else
+    echo "Selected Apple Silicon kernel is not installed: $selected" >&2
+    exit 1
+  fi
+elif (( ${#kernels[@]} == 1 )); then
   printf '%s\n' "${kernels[0]}"
 else
   echo "Expected exactly one installed Apple Silicon kernel package" >&2

@@ -1,0 +1,27 @@
+{
+  "scope": "uninstalled research package assembled and inspected in an Ubuntu ARM64 VM; not an Arch installation or native hardware qualification",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "kernel_release": "7.1.13-omarchy-m4-r7-ARCH",
+  "kernel_build": "incremental rebuild from the previously completed R7 output, with LOCALVERSION changed and Kbuild run again for Image, modules and DTBs",
+  "config_sha256": "9e0bd682fc678215daf71a3ab2c68616b2b75b2e9baa5f24b2ccd578dd3dec6f",
+  "image_sha256": "5d4c2a78be4434b7ad0c67dbbe7829b7cf73a39d448d6e9c6ec8ddc4cedf4d91",
+  "dtb_sha256": "734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3",
+  "staging_transfer_sha256": "a1e38fcb431dce24fd6f9f431ff21b1a9d59b27c3bd26eff7419eb722db324ae",
+  "package": "linux-omarchy-m4-research-7.1.13.r7-1-aarch64.pkg.tar.gz",
+  "package_sha256": "416180688c287e1f427640d7e8838a4c1231b2a38f3a1f4854b46f4e29f3d613",
+  "validation": ["generic QEMU ARM64 virt boot printed ready marker and powered down with networking disabled", "all 1597 modules staged against modules.order", "Image and five key display/GPU/Ethernet modules report the same release", "depmod -e with System.map emitted no diagnostics", "a generic QEMU virt boot loaded asahi_m4, appledrm, phy_apple_dptx, atlantic and tg3, confirmed each in lsmod, and powered down; no Apple hardware was emulated", "makepkg source checksum passed and pacman -Qip inspected the package without installing it", "all 1614 staged usr files match the package byte-for-byte; module count is 1597; no package install script", "modified staging config was rejected before package output"],
+  "module_smoke_initramfs_sha256": "3c8093c8dff63cb7053b3f63805c81676cbefd51b8ab80d1e42e1f5f7ad518b5",
+  "independent_build": {
+    "scope": "fresh output directory on the same ARM64 VM and toolchain, not an independent machine or a bit-reproducibility claim",
+    "result": "Image, 1597 modules and DTBs built successfully; source checkout remained clean",
+    "config_sha256": "9e0bd682fc678215daf71a3ab2c68616b2b75b2e9baa5f24b2ccd578dd3dec6f",
+    "image_sha256": "1c72fadacda7771b109841a70559b746c5f3a6898f95711877702708ac2230d0",
+    "dtb_sha256": "734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3",
+    "checks": "Five key modules report the matching release; the clean Image booted a minimal generic QEMU virt initramfs with networking disabled and powered down.",
+    "warning": "modpost warned that vmlinux .hyp.data is unexpectedly non-allocatable; compilation also emitted warnings.",
+    "note": "Image bytes differ from the incremental package build; build timestamps and counters differ, and bit-for-bit reproducibility was not established."
+  },
+  "packaging_environment": "Ubuntu 26.04 ARM64 VM with makepkg 7.1.0 and an empty pacman database; dependency resolution was explicitly skipped. This is not a tested Arch environment.",
+  "limitations": ["Omarchy boot checker does not yet recognize the research package", "no initramfs, bootloader admission or recovery integration", "no Arch dependency or upgrade test", "no physical boot, GPU, HDMI, networking or recovery test", "no external module headers"],
+  "hardware_validated": false
+}

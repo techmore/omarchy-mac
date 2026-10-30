@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Assemble and inspect a locked J773g research boot bundle; never deploy it.
+
+Based on ElementaryOS_MSeries/mseries/m4-mini/assemble-boot-chain.py and the
+GravityLinux/scripts update-m1n1 format: stage 2 + board DTB + gzip(U-Boot).
+This performs byte and source-contract checks, not firmware or hardware tests.
+"""
+import argparse
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+LOADER_COMMIT = 'f02d4a52017915febb222539636b5b025a70407a'
+ARTWORK_COMMIT = 'e613a87e526f8fec439c4129e69dd2821b38d258'
+UBOOT_COMMIT = 'a2f6913694ff26908c16948af3f8372429782263'
+UBOOT_SOURCE_SHA = '6adaf60d20f5f53792eefeaf662dbbd481d7d225d5938c80f6379800b685fd6c'
+UBOOT_CONFIG_SHA = 'e93e0b7cda7efedc1bb76863041a00e08798192ce8723c75377fbce32faea6b7'
+KERNEL_COMMIT = 'f46fde727002de82666741306b4e7c322fe3f0d9'
+DTB_SHA = '734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3'
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def verified(path, expected):
+    data = path.read_bytes()
+    if digest(data) != expected:
+        raise ValueError(f'artifact hash mismatch: {path.name}')
+    return data
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--bootloader', type=Path, required=True)
+    parser.add_argument('--uboot', type=Path, required=True)
+    parser.add_argument('--dtb', type=Path, required=True)
+    parser.add_argument('--kernel-receipt', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if args.output.exists() or args.output.is_symlink():
+        raise ValueError('new output directory required')
+
+    loader = json.loads((args.bootloader / 'receipt.json').read_text())
+    uboot = json.loads((args.uboot / 'receipt.json').read_text())
+    kernel = json.loads(args.kernel_receipt.read_text())
+    if (loader['commit'] != LOADER_COMMIT or loader['artwork_commit'] != ARTWORK_COMMIT
+            or loader.get('build_tag') != LOADER_COMMIT[:7]
+            or loader.get('m4_bringup') != 'NO_DISPLAY=1 for both stages; preserve firmware framebuffer'):
+        raise ValueError('bootloader receipt does not match locked M4 source/configuration')
+    if (uboot['commit'] != UBOOT_COMMIT or uboot['archive_sha256'] != UBOOT_SOURCE_SHA
+            or uboot['configuration'] != 'apple_m1_defconfig'
+            or uboot['artifacts']['.config'] != UBOOT_CONFIG_SHA):
+        raise ValueError('U-Boot receipt does not match locked source/configuration')
+    if (kernel['kernel_commit'] != KERNEL_COMMIT
+            or kernel['artifacts_sha256']['t8132-j773g.dtb'] != DTB_SHA):
+        raise ValueError('kernel receipt does not match locked J773g source/device tree')
+
+    for stage in (1, 2):
+        lines = (args.bootloader / f'stage{stage}-build_cfg.h').read_text().splitlines()
+        if '#define NO_DISPLAY' not in lines or ('#define CHAINLOADING' in lines) != (stage == 1):
+            raise ValueError(f'bootloader stage {stage} configuration mismatch')
+    verified(args.uboot / '.config', UBOOT_CONFIG_SHA)
+    stage1 = verified(args.bootloader / 'm1n1-stage1.bin', loader['artifacts']['m1n1-stage1.bin'])
+    stage2 = verified(args.bootloader / 'm1n1-stage2.bin', loader['artifacts']['m1n1-stage2.bin'])
+    if stage1 == stage2:
+        raise ValueError('bootloader stages unexpectedly match')
+    uboot_bytes = verified(args.uboot / 'u-boot-nodtb.bin', uboot['artifacts']['u-boot-nodtb.bin'])
+    dtb = verified(args.dtb, DTB_SHA)
+    if dtb[:4] != bytes.fromhex('d00dfeed') or int.from_bytes(dtb[4:8], 'big') != len(dtb):
+        raise ValueError('complete flattened J773g device tree required')
+    compatible = subprocess.check_output(['fdtget', '-t', 's', str(args.dtb), '/', 'compatible'], text=True).split()
+    if compatible != ['apple,j773g', 'apple,t8132', 'apple,arm-platform']:
+        raise ValueError('device tree is not the M4 mini J773g')
+
+    bundle = stage2 + dtb + gzip.compress(uboot_bytes, mtime=0)
+    first, second = len(stage2), len(stage2) + len(dtb)
+    if bundle[:first] != stage2 or bundle[first:second] != dtb or gzip.decompress(bundle[second:]) != uboot_bytes:
+        raise ValueError('boot component readback mismatch')
+    args.output.mkdir(parents=True)
+    marker = args.output / 'INCOMPLETE'
+    marker.touch()
+    (args.output / 'boot.bin').write_bytes(bundle)
+    (args.output / 'm1n1-stage1.bin').write_bytes(stage1)
+    actual = (args.output / 'boot.bin').read_bytes()
+    if actual != bundle:
+        raise ValueError('written boot bundle differs from verified bytes')
+    receipt = {
+        'scope': 'J773g research boot-chain byte assembly only; no installation or hardware qualification',
+        'format_reference': 'GravityLinux/scripts@12418e50125a72749a75917db578db55ea42704c:update-m1n1',
+        'source_commits': {'bootloader': LOADER_COMMIT, 'uboot': UBOOT_COMMIT, 'kernel': KERNEL_COMMIT},
+        'inputs': {'stage1': digest(stage1), 'stage2': digest(stage2), 'dtb': digest(dtb), 'uboot': digest(uboot_bytes)},
+        'offsets': {'stage2': 0, 'j773g_dtb': first, 'gzip_uboot': second},
+        'boot_bin_sha256': digest(actual), 'boot_bin_bytes': len(actual),
+        'readback': 'exact stage2/DTB bytes and decompressed U-Boot match',
+        'stage1': 'separate artifact; not installed or authorized',
+        'limitations': ['loader source differs from installed Gravity package pin', 'firmware and memory fixups untested',
+                        'not an Arch package, installer, ESP update, native boot or HDMI validation'],
+        'hardware_validated': False,
+    }
+    (args.output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    marker.unlink()
+    print('Research boot bundle assembled and read back; nothing installed.')
+
+
+if __name__ == '__main__':
+    main()

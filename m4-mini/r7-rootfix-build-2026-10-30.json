@@ -1,0 +1,39 @@
+{
+  "scope": "local ARM64 kernel build, generic QEMU and disposable Arch ARM initramfs; no Apple hardware test",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "release": "7.1.13-omarchy-m4-r7-rootfix-ARCH",
+  "toolchain": "Ubuntu 24.04 ARM64 VM, clang 18.1.3, GNU ld 2.42, Rust 1.99.0, bindgen 0.71.1",
+  "build": "Fresh out-of-tree --r7 --arch-research --rootfix build, started with four jobs and safely resumed with six jobs after source and configuration rechecking.",
+  "source_clean_after_build": true,
+  "module_count": 1603,
+  "artifacts_sha256": {
+    "config": "b45421f50feb6a6114d0f1bb694ccc6fbb1763780e9a715291ae1cc584d949fa",
+    "Image": "539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833",
+    "t8132-j773g.dtb": "734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3",
+    "dm-crypt.ko": "7ac4ab645e23bd8bbd4a0b069c4d080c8a72e1eb85e8e2619f5308551ffd7aed",
+    "dm-integrity.ko": "cd030b8a0a7645db2b5decfd13ac0210f9e06c569b0a66781410bb4a46530b4a",
+    "nvme-apple.ko": "d873abc799c3d00599d06e3a202d3c79269ed2425dfa56abca36ed968a3e44ef",
+    "asahi_m4.ko": "4eac15ef05c2bf4a9e9a8e252b9668df0cf023041f8ef406fe220cbbfc42a472",
+    "appledrm.ko": "d49bbdc210d66b32467003a28ac13bb520fb1265a3a8b5f9cbc026fc991f3bb1",
+    "phy-apple-dptx.ko": "ea7a97255220dd1c263010361c1dc38b1741c1e0cefa87a439fb6a8d0526dd1a",
+    "staged_tree_transfer_archive": "bbc46ded1f61583e076828e1628edad54e552ca196a4cf5e536eac342107468b",
+    "linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz": "cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d"
+  },
+  "staging": "All modules.order entries staged; key module vermagic matched the release and depmod -e with System.map returned no diagnostics. The Arch-shaped package was built with dependency resolution skipped and has not been installed on a Mac.",
+  "qemu": {
+    "scope": "generic ARM64 virt machine, HVF, no disks or network; no Apple devices",
+    "initramfs_sha256": "af277856778f8aa531b08e14f55174d74fe3d6225f709335323bea011189eb04",
+    "log_sha256": "c5f869255b0cfc764b9b4a395e897e2a13242d9bedb87536d945fddcd2131c6f",
+    "result": "Booted and loaded asahi_m4, appledrm, phy_apple_dptx, nvme_apple, dm_crypt and dm_integrity without hardware present."
+  },
+  "arch_arm_initramfs": {
+    "scope": "signed generic Arch Linux ARM root in an isolated VM, partially updated, with Omarchy boot payload and Asahi hooks staged manually; modules are not package-owned in this test",
+    "mkinitcpio": "42.2-1",
+    "default_sha256": "414cceeb0a06bc8f0fe5a7d6b61f5924f15504e89fcb896d7dde7dd42a0f2cd2",
+    "fallback_sha256": "4672baf99f854150b420bdd29a3effeacdae7cac5e10063a02bb729ddcb16172",
+    "result": "Both images built without errors; each included the storage and encryption modules, their modprobe dependency closures, cryptsetup and firmware helpers. A generated cryptsetup unit and the Omarchy services passed offline systemd verification.",
+    "warnings": ["aarch64 microcode hook skipped", "no drm_privacy_screen_register module found", "no vconsole.conf in generic root", "possible missing dockchannel_hid firmware", "fallback also warned about xhci_pci_renesas and ufs_renesas firmware"]
+  },
+  "limitations": ["no M4 mini boot or HDMI test", "no verified firmware handoff or GPU execution", "no qualified package transaction or recovery path", "no complete Omarchy image installation", "generic VM tests do not establish Apple hardware compatibility"],
+  "hardware_validated": false
+}

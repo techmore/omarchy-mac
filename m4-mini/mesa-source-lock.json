@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "status": "research-source-only",
+  "repository": "https://github.com/techmore/mesa",
+  "branch": "m4-mini-mesa6-research",
+  "commit": "96a24da3f2114aa5a771841a6a0759ecccd9d83e",
+  "gravity_base": "87ac51d411f0e58a9433567ec2666f457be89e1d",
+  "upstream_pr1_parent": "208d4a484459a12c77bf073362613f842288c2e0",
+  "mseries_recipe": "c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c",
+  "kernel_and_mesa_uapi_sha256": "eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015",
+  "prior_build_receipt": "https://github.com/techmore/ElementaryOS_MSeries/blob/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/m4-mini/receipts/2026-10-22-mesa6-native-full-success.json",
+  "verification": "Original eight upstream commits are preserved as history; all eleven reviewed final Mesa 6 source hashes match, the seven follow-up blobs match the published branch, and the upstream compare changes only the expected eight files.",
+  "limitations": "Prior native ARM64 Mesa build and software tests were on an earlier M-series recipe, not an Omarchy package or M4 hardware validation."
+}

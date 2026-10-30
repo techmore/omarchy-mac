@@ -1,0 +1,6 @@
+# M4 mini research only. Keep the ordinary and fallback images separate.
+ALL_kver="/boot/vmlinuz-linux-omarchy-m4-research"
+PRESETS=('default' 'fallback')
+default_image="/boot/initramfs-linux-omarchy-m4-research.img"
+fallback_image="/boot/initramfs-linux-omarchy-m4-research-fallback.img"
+fallback_options="-S autodetect"

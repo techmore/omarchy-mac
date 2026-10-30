@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# omarchy:summary=Check the default Limine menu entry for the M4 research kernel
+# omarchy:hidden=true
+
+# Fail closed for the narrow Omarchy layout we can verify. This does not
+# inspect one-shot EFI variables or prove that the entry will boot.
+set -euo pipefail
+(( $# == 2 )) && [[ $2 == "linux-omarchy-m4-research" && -f $1 ]] || exit 1
+awk -v kernel="$2" '
+  {
+    line = $0
+    sub(/^[[:space:]]+/, "", line)
+    sub(/[[:space:]]+$/, "", line)
+  }
+  line ~ /^#/ || line == "" { next }
+  line ~ /^\// {
+    count++
+    if (count == 1) {
+      first = line
+      in_omarchy = (first == "/+Omarchy" || first == "/Omarchy")
+    } else if (line ~ /^\/[^\/]/) {
+      in_omarchy = 0
+    }
+    if (count == 2) second = line
+    if (in_omarchy && line == "//" kernel "-fallback") fallbacks++
+    next
+  }
+  count == 0 {
+    lower = tolower(line)
+    if (lower ~ /^default_entry[[:space:]]*:/) {
+      sub(/^[^:]*:[[:space:]]*/, "", lower)
+      default_entry = lower
+      defaults++
+    }
+    if (lower ~ /^remember_last_entry[[:space:]]*:/) {
+      sub(/^[^:]*:[[:space:]]*/, "", lower)
+      remember = lower
+      remembers++
+    }
+  }
+  END {
+    ok = defaults == 1 && default_entry == "2" && remembers <= 1 &&
+      (remembers == 0 || remember == "no") &&
+      (first == "/+Omarchy" || first == "/Omarchy") && second == "//" kernel && fallbacks == 1
+    exit !ok
+  }
+' "$1"

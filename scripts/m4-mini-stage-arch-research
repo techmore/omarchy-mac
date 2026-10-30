@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Stage an Omarchy-shaped kernel tree for inspection; never install or package it.
+set -euo pipefail
+
+rootfix=0
+if [[ ${1:-} == --rootfix ]]; then
+  rootfix=1
+  shift
+fi
+if (( $# != 3 )); then
+  echo "Usage: $0 [--rootfix] CLEAN_R7_KERNEL_CHECKOUT ARCH_RESEARCH_BUILD NEW_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+source_dir=$(realpath "$1")
+build_dir=$(realpath "$2")
+output_dir=$(realpath -m -- "$3")
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(cd -- "$script_dir/.." && pwd)
+case "$output_dir/" in
+  "$source_dir/"*|"$build_dir/"*) echo 'Output must be outside the source and build directories' >&2; exit 1 ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || { echo 'New output directory required' >&2; exit 1; }
+lock="$repo_dir/m4-mini/source-lock-r7.json"
+expected_release=7.1.13-omarchy-m4-r7-ARCH
+if (( rootfix )); then
+  lock="$repo_dir/m4-mini/source-lock-r7-rootfix.json"
+  expected_release=7.1.13-omarchy-m4-r7-rootfix-ARCH
+fi
+python3 "$script_dir/m4-mini-source-check" "$source_dir" --config "$build_dir/.config" --lock "$lock"
+base=(make -C "$source_dir" "O=$build_dir" ARCH=arm64 CC=clang LD=ld HOSTCC=clang LOCALVERSION=)
+release=$("${base[@]}" -s kernelrelease)
+[[ $release == "$expected_release" ]] || { echo 'Unexpected kernel release' >&2; exit 1; }
+for file in "$build_dir/arch/arm64/boot/Image" "$build_dir/arch/arm64/boot/dts/apple/t8132-j773g.dtb" \
+            "$build_dir/modules.order" "$build_dir/Module.symvers" "$build_dir/System.map"; do
+  [[ -f $file ]] || { echo "Build output missing: $file" >&2; exit 1; }
+done
+dtb="$build_dir/arch/arm64/boot/dts/apple/t8132-j773g.dtb"
+[[ $(fdtget -t s "$dtb" / compatible) == "apple,j773g apple,t8132 apple,arm-platform" ]] || {
+  echo 'J773g device tree required' >&2; exit 1;
+}
+mkdir -- "$output_dir"
+touch "$output_dir/INCOMPLETE"
+modules_dir="$output_dir/usr/lib/modules/$release"
+mkdir -p "$modules_dir/dtbs/apple"
+install -m 644 "$build_dir/arch/arm64/boot/Image" "$modules_dir/vmlinuz"
+install -m 644 "$dtb" "$modules_dir/dtbs/apple/t8132-j773g.dtb"
+install -m 644 "$build_dir/.config" "$modules_dir/config"
+printf '%s\n' linux-omarchy-m4-research > "$modules_dir/pkgbase"
+"${base[@]}" "INSTALL_MOD_PATH=$output_dir/usr" INSTALL_MOD_STRIP=1 modules_install
+rm -f -- "$modules_dir/build" "$modules_dir/source"
+depmod -e -F "$build_dir/System.map" -b "$output_dir/usr" "$release" 2> "$output_dir/depmod-check.log"
+[[ ! -s $output_dir/depmod-check.log ]] || { echo 'Module dependency check emitted diagnostics' >&2; exit 1; }
+module_count=$(find "$modules_dir/kernel" -type f -name '*.ko' | wc -l | tr -d ' ')
+expected_count=$(wc -l < "$build_dir/modules.order" | tr -d ' ')
+(( module_count > 0 && module_count == expected_count )) || { echo 'Staged module count differs from the build' >&2; exit 1; }
+while IFS= read -r module; do
+  [[ $module == *.o && -f "$modules_dir/kernel/${module%.o}.ko" ]] || {
+    echo "Staged module missing: $module" >&2; exit 1;
+  }
+done < "$build_dir/modules.order"
+modules=(
+  drivers/gpu/drm/asahi/asahi_m4.ko \
+  drivers/gpu/drm/apple/appledrm.ko \
+  drivers/phy/apple/phy-apple-dptx.ko \
+  drivers/net/ethernet/aquantia/atlantic/atlantic.ko \
+  drivers/net/ethernet/broadcom/tg3.ko
+)
+if (( rootfix )); then
+  modules+=(drivers/md/dm-crypt.ko drivers/md/dm-integrity.ko)
+fi
+for module in "${modules[@]}"; do
+  vermagic=$(modinfo -F vermagic "$modules_dir/kernel/$module")
+  [[ ${vermagic%% *} == "$release" ]] || { echo "Module release mismatch: $module" >&2; exit 1; }
+done
+python3 - "$output_dir" "$release" "$module_count" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+root, release, count = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+modules = root / 'usr/lib/modules' / release
+if ('Linux version ' + release + ' ').encode() not in (modules / 'vmlinuz').read_bytes():
+    raise SystemExit('kernel Image release does not match its modules')
+files = ['vmlinuz', 'config', 'pkgbase', 'dtbs/apple/t8132-j773g.dtb', 'modules.dep']
+receipt = {'scope': 'uninstalled Omarchy-shaped kernel staging tree, not an Arch package',
+           'kernel_commit': 'f46fde727002de82666741306b4e7c322fe3f0d9',
+           'release': release, 'module_count': count,
+           'files_sha256': {name: hashlib.sha256((modules / name).read_bytes()).hexdigest() for name in files},
+           'checks': ['locked source/config checked', 'J773g compatible checked',
+                      'all modules.order entries staged', 'Image and key modules report the same release',
+                      'depmod -e completed without diagnostics'],
+           'limitations': ['no package metadata or installer integration', 'no matching boot or recovery qualification',
+                           'no native M4 or HDMI test'], 'hardware_validated': False}
+(root / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+PY
+rm -- "$output_dir/INCOMPLETE"
+echo "Staged $module_count modules for $release; nothing installed."

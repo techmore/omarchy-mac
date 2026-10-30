@@ -1,0 +1,9 @@
+{
+  "scope": "local kernel configuration and generated release-name check; no kernel image or package built with this configuration",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "command": "scripts/m4-mini-build --config-only --r7 --arch-research <clean-checkout> <new-build-directory>",
+  "config_sha256": "9e0bd682fc678215daf71a3ab2c68616b2b75b2e9baa5f24b2ccd578dd3dec6f",
+  "kernel_release": "7.1.13-omarchy-m4-r7-ARCH",
+  "check": "Kbuild prepare generated auto.conf, then kernelrelease ended in -ARCH; using --arch-research without --r7 was rejected.",
+  "limitations": ["not an Arch package", "no boot chain, firmware handoff or native hardware test"]
+}
