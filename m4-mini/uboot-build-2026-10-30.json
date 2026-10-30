@@ -1,0 +1,15 @@
+{
+  "scope": "two local ARM64 U-Boot builds; no boot-chain deployment or hardware qualification",
+  "repository": "https://github.com/GravityLinux/u-boot",
+  "branch": "gravity-alpha-20260925",
+  "commit": "a2f6913694ff26908c16948af3f8372429782263",
+  "source_archive_sha256": "6adaf60d20f5f53792eefeaf662dbbd481d7d225d5938c80f6379800b685fd6c",
+  "toolchain": "Ubuntu 24.04 ARM64 local VM; GCC 13.3.0 and GNU ld 2.42",
+  "configuration": "apple_m1_defconfig",
+  "config_sha256": "a8ca4ce675d82f32c567bf50eff7c703e352e1f8e44a902949f5f2054350fe9e",
+  "uboot_nodtb_sha256": "054282c8465a917a3bdd7db911e997d57a6bb97e9261b70063c4041d07e9cc4b",
+  "checks": "Two fresh source builds produced identical config and binaries; ARM64, Apple architecture and EFI loader options were enabled; readelf identified AArch64.",
+  "initial_failure": "First local build lacked GnuTLS headers. Installing libgnutls28-dev in the disposable VM allowed two fresh builds.",
+  "comparison": "Earlier M-series U-Boot builds used GCC 15.2 and recorded a different .config hash; the exact config differences have not been reconciled. The earlier boot-chain assembler rejects this config, and its guard has not been bypassed.",
+  "not_verified": ["equivalence to prior config", "complete matching boot chain", "firmware handoff", "physical boot", "HDMI", "recovery"]
+}
