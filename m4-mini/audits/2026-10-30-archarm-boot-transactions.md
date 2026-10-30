@@ -49,21 +49,26 @@ transaction: it does not cover other hooks, interrupted operations, future
 package updates or a coordinated selection of the matching stage 2, device
 tree, kernel and recovery chain. A persistent mask is not a solution.
 
-The local Omarchy boot payload now includes a pre-transaction guard for the
-two named research packages. With that guard already present in the disposable
-root, real pacman refused a simulated fresh install and an upgrade of each
-package before the recording updater ran; reinstalling an unrelated `cpio`
-package passed. The fresh-install cases used an empty temporary package
-database and disabled dependency checks to reach the hook. The test is in
-`m4-mini/tests/archarm-transaction-guard.sh` and needs the marked disposable
-fixture and pinned archives described above.
+The local Omarchy boot payload now includes pre-transaction guards for the
+two named research packages and for the known m1n1-triggering paths when an M4
+research package is already installed. With the guards already present in the
+disposable root, real pacman refused a simulated fresh install and an upgrade
+of each research package, and refused another package touching an Asahi
+bootloader path. A temporary database also exercised an overlay package
+upgrade and removal with the research kernel recorded as installed. None of
+those blocked transactions reached the recording updater. A baseline fixture
+with no research package and an unrelated `cpio` reinstall passed. The
+fresh-install and temporary-database cases disabled dependency checks to reach
+the hooks. The test is in `m4-mini/tests/archarm-transaction-guard.sh` and
+needs the marked disposable fixture and pinned archives described above.
 
 This is a brake, not an activation mechanism. ALPM reads pre-transaction hooks
 before installing packages, so a guard installed in the same transaction as a
 research package cannot protect that transaction. An uninstalled, overridden
-or bypassed hook, a differently named package, other updater triggers and
-future package operations also need a coherent solution. Do not use this guard
-as evidence that the packages can be installed.
+or bypassed hook, a differently named package, an updater invoked outside these
+known hooks, a nonstandard pacman database and interrupted operations still
+need a coherent solution. Do not use these guards as evidence that the
+packages can be installed.
 
 ## Full Omarchy initramfs
 

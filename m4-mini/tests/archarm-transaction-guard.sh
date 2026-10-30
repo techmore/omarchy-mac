@@ -26,10 +26,25 @@ ln -s /proc/self/fd/2 "$root/dev/stderr"
 
 hook="$root/usr/share/libalpm/hooks/05-omarchy-mac-m4-research-guard.hook"
 guard="$root/usr/lib/omarchy-mac/boot/m4-research-transaction-guard"
-[[ ! -e $hook && ! -L $hook && ! -e $guard && ! -L $guard ]] || exit 1
+coexistence_hook="$root/usr/share/libalpm/hooks/06-omarchy-mac-m4-coexistence-guard.hook"
+coexistence_guard="$root/usr/lib/omarchy-mac/boot/m4-coexistence-guard"
+for path in "$hook" "$guard" "$coexistence_hook" "$coexistence_guard"; do
+  [[ ! -e $path && ! -L $path ]] || exit 1
+done
 install -Dm644 "$base/05-omarchy-mac-m4-research-guard.hook" "$hook"
 install -Dm755 "$base/m4-research-transaction-guard" "$guard"
-trap 'rm -f "$hook" "$guard"' EXIT
+install -Dm644 "$base/06-omarchy-mac-m4-coexistence-guard.hook" "$coexistence_hook"
+install -Dm755 "$base/m4-coexistence-guard" "$coexistence_guard"
+baseline_db="" research_record=""
+cleanup() {
+  umount "$root/var/lib/pacman" 2>/dev/null || :
+  rm -f "$hook" "$guard" "$coexistence_hook" "$coexistence_guard" \
+    "$root/usr/lib/asahi-boot/m4-guard-fixture" \
+    "$root/usr/share/omarchy-platform/dtb-overlays/m4-guard-fixture/test.dtbo"
+  [[ -z $baseline_db ]] || rm -rf -- "$baseline_db"
+  [[ -z $research_record ]] || rm -rf -- "$research_record"
+}
+trap cleanup EXIT
 mkdir -p "$root/tmp/m4-guard-db/local"
 stage2="$root/boot/efi/m1n1/boot.bin"
 updates="$root/tmp/m4-transaction/m1n1-hook.log"
@@ -63,10 +78,71 @@ for package in m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz \
   done
 done
 
+# An unrelated package that touches an Asahi loader path triggers the existing
+# m1n1 hook too. With M4 installed, it must be stopped before that hook runs.
+fixture="$root/tmp/m4-transaction/guard-fixture"
+mkdir -p "$fixture/usr/lib/asahi-boot" "$fixture/usr/share/omarchy-platform/dtb-overlays/m4-guard-fixture"
+printf 'fixture\n' >"$fixture/usr/lib/asahi-boot/m4-guard-fixture"
+printf 'fixture\n' >"$fixture/usr/share/omarchy-platform/dtb-overlays/m4-guard-fixture/test.dtbo"
+cat >"$fixture/.PKGINFO" <<'PKG'
+pkgname = m4-guard-fixture
+pkgbase = m4-guard-fixture
+pkgver = 1-1
+pkgdesc = Disposable package hook fixture
+arch = aarch64
+builddate = 0
+packager = fixture
+size = 8
+PKG
+tar -czf "$root/tmp/m4-transaction/m4-guard-fixture-1-1-aarch64.pkg.tar.gz" -C "$fixture" .PKGINFO usr
+if chroot "$root" /usr/bin/pacman -U --noconfirm \
+  /tmp/m4-transaction/m4-guard-fixture-1-1-aarch64.pkg.tar.gz >"$base/guard-coexistence.log" 2>&1; then
+  echo 'guard did not stop an unrelated m1n1-triggering package' >&2
+  exit 1
+fi
+grep -Fq 'An unqualified M4 research package is installed' "$base/guard-coexistence.log"
+[[ ! -e $root/usr/lib/asahi-boot/m4-guard-fixture &&
+  $(sha256sum "$stage2" | cut -d' ' -f1) == "$stage2_hash" &&
+  $(sha256sum "$updates" | cut -d' ' -f1) == "$updates_hash" ]] || exit 1
+
+# Hide the real fixture database in this namespace and retain only cpio's
+# record, to test the normal no-M4 case without changing the original DB.
+baseline_db=$(mktemp -d "$root/tmp/m4-guard-baseline-db.XXXXXX")
+mkdir -p "$baseline_db/local"
+cp -a "$root"/var/lib/pacman/local/cpio-* "$baseline_db/local/"
+cp -a "$root/var/lib/pacman/local/ALPM_DB_VERSION" "$baseline_db/local/"
+research_record=$(mktemp -d "$root/tmp/m4-guard-research-record.XXXXXX")
+cp -a "$root"/var/lib/pacman/local/linux-omarchy-m4-research-* "$research_record/"
+mount --bind "$baseline_db" "$root/var/lib/pacman"
+chroot "$root" /usr/bin/pacman --nodeps --nodeps -U --noconfirm \
+  /tmp/m4-transaction/m4-guard-fixture-1-1-aarch64.pkg.tar.gz >"$base/guard-baseline.log" 2>&1
+[[ -f $root/usr/lib/asahi-boot/m4-guard-fixture &&
+  $(sha256sum "$updates" | cut -d' ' -f1) != "$updates_hash" ]] || exit 1
+# Simulate a later M4 install in this disposable database, then prove that a
+# package upgrade and removal which touch an overlay are stopped too.
+cp -a "$research_record"/linux-omarchy-m4-research-* "$baseline_db/local/"
+baseline_updates_hash=$(sha256sum "$updates" | cut -d' ' -f1)
+for operation in upgrade remove; do
+  if [[ $operation == upgrade ]]; then
+    args=(--nodeps --nodeps -U --noconfirm /tmp/m4-transaction/m4-guard-fixture-1-1-aarch64.pkg.tar.gz)
+  else
+    args=(--nodeps --nodeps -R --noconfirm m4-guard-fixture)
+  fi
+  if chroot "$root" /usr/bin/pacman "${args[@]}" >"$base/guard-overlay-$operation.log" 2>&1; then
+    echo "guard did not stop overlay $operation" >&2
+    exit 1
+  fi
+  grep -Fq 'An unqualified M4 research package is installed' "$base/guard-overlay-$operation.log"
+done
+[[ -f $root/usr/share/omarchy-platform/dtb-overlays/m4-guard-fixture/test.dtbo &&
+  $(sha256sum "$updates" | cut -d' ' -f1) == "$baseline_updates_hash" ]] || exit 1
+umount "$root/var/lib/pacman"
+rm -f "$root/usr/lib/asahi-boot/m4-guard-fixture" \
+  "$root/usr/share/omarchy-platform/dtb-overlays/m4-guard-fixture/test.dtbo"
+
 # An unrelated installed package must still be able to upgrade/reinstall.
 chroot "$root" /usr/bin/pacman -U --noconfirm \
   /var/cache/pacman/pkg/cpio-2.15-3-aarch64.pkg.tar.xz >"$base/guard-unrelated.log" 2>&1
 ! grep -Fq 'M4 research packages are not qualified' "$base/guard-unrelated.log"
-[[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$stage2_hash" &&
-  $(sha256sum "$updates" | cut -d' ' -f1) == "$updates_hash" ]] || exit 1
-echo 'Fresh install and upgrade of both research packages were blocked before the updater; unrelated cpio reinstall passed.'
+[[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$stage2_hash" ]] || exit 1
+echo 'Research installs and upgrades, and other m1n1 triggers with M4 installed, were blocked; baseline fixture and unrelated cpio reinstall passed.'
