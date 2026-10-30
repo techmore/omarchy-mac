@@ -99,7 +99,14 @@ release test must check hook output and resulting artifacts, not just pacman's
 exit status. The default image also warned that firmware for `dockchannel_hid`
 may be missing; `modinfo` identifies `apple/tpmtfw-*.bin`. The generic root
 has no Mac-specific firmware bundle, so actual device firmware availability
-and input functionality remain unverified.
+and input functionality remain unverified. In the separately rebuilt J773g
+DTB (SHA-256 `734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3`),
+both `/soc/fifo@394b14000` and its `input@0` node report `status = "disabled"`.
+The driver's source says a firmware name is required only for some devices.
+This explains why the generic module-metadata warning alone does not establish
+that the mini needs this firmware. It does not account for bootloader fixups,
+other Apple firmware requirements or external keyboard and pointing-device
+behavior on hardware.
 
 The separate `--rootfix` configuration enables the device-mapper encryption
 drivers for a new research build. It does not make the old package installable
