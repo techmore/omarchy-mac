@@ -1,0 +1,19 @@
+{
+  "scope": "local ARM64 Linux configuration reproduction; not a kernel build result",
+  "kernel_commit": "6363990c4a4535b36dccd6c9a972e124861274fa",
+  "config_fragments_origin": "https://github.com/techmore/ElementaryOS_MSeries/tree/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/m4-mini/gravity",
+  "config_fragments_sha256": {
+    "gravity.config": "d74d5f3d47735842f700bb85fd8203ae95898f37341426313a2070ac72170948",
+    "gravity-aarch64.config": "3f4b7439dd90544190e9ce545ca5453147ba987863f5415e0fdf61a419a45d31"
+  },
+  "environment": "Ubuntu 24.04 ARM64 local QEMU VM, clang 18.1.3, rustc 1.99.0 with rust-src, bindgen 0.71.1",
+  "resolved_config_sha256": "e2ff7cabcf8f56abfc659d457a4b6bfdd7b2b358e3c7ea700dbbc0f0501a2710",
+  "checks": {
+    "CONFIG_ARCH_APPLE": "y",
+    "CONFIG_ARM64_16K_PAGES": "y",
+    "CONFIG_RUST": "y",
+    "CONFIG_DRM_APPLE": "m",
+    "CONFIG_DRM_ASAHI_M4": "m"
+  },
+  "result": "A second config-only run of scripts/m4-mini-build produced the same resolved configuration and passed the source and configuration checker."
+}

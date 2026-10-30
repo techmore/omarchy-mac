@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Build an unqualified M4 mini research kernel; does not install it.
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 [--config-only] CLEAN_KERNEL_CHECKOUT NEW_BUILD_DIRECTORY [JOBS]" >&2
+  exit 2
+}
+config_only=0
+if [[ ${1:-} == --config-only ]]; then
+  config_only=1
+  shift
+fi
+[[ $# -ge 2 && $# -le 3 ]] || usage
+source_dir=$(realpath "$1")
+output_dir=$2
+jobs=${3:-3}
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || usage
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(cd -- "$script_dir/.." && pwd)
+python3 "$script_dir/m4-mini-source-check" "$source_dir"
+command -v rustfmt >/dev/null
+rustfmt --version >/dev/null
+if [[ -z ${RUST_LIB_SRC:-} ]]; then
+  export RUST_LIB_SRC="$(rustc --print sysroot)/lib/rustlib/src/rust/library"
+fi
+[[ -f "$RUST_LIB_SRC/core/src/lib.rs" ]] || { echo 'Rust library sources are missing' >&2; exit 1; }
+# A new, separate output directory prevents overwriting an existing build.
+output_dir=$(realpath -m -- "$output_dir")
+case "$output_dir/" in "$source_dir/"*) echo 'Build directory must be outside the source checkout' >&2; exit 1;; esac
+mkdir -- "$output_dir"
+base=(make -C "$source_dir" "O=$output_dir" ARCH=arm64 CC=clang LD=ld HOSTCC=clang)
+"${base[@]}" rustavailable
+"${base[@]}" defconfig asahi.config
+"$source_dir/scripts/kconfig/merge_config.sh" -m -O "$output_dir" "$output_dir/.config" \
+  "$repo_dir/m4-mini/config/gravity.config" "$repo_dir/m4-mini/config/gravity-aarch64.config"
+"$source_dir/scripts/config" --file "$output_dir/.config" --set-str LOCALVERSION -omarchy-m4-candidate --disable LOCALVERSION_AUTO
+"${base[@]}" olddefconfig
+python3 "$script_dir/m4-mini-source-check" "$source_dir" --config "$output_dir/.config"
+if (( ! config_only )); then
+  "${base[@]}" "-j$jobs" Image modules dtbs
+fi
