@@ -10,6 +10,6 @@
   "uboot_nodtb_sha256": "054282c8465a917a3bdd7db911e997d57a6bb97e9261b70063c4041d07e9cc4b",
   "checks": "Two fresh source builds produced identical config and binaries; ARM64, Apple architecture and EFI loader options were enabled; readelf identified AArch64.",
   "initial_failure": "First local build lacked GnuTLS headers. Installing libgnutls28-dev in the disposable VM allowed two fresh builds.",
-  "comparison": "Earlier M-series U-Boot builds used GCC 15.2 and recorded a different .config hash; the exact config differences have not been reconciled. The earlier boot-chain assembler rejects this config, and its guard has not been bypassed.",
-  "not_verified": ["equivalence to prior config", "complete matching boot chain", "firmware handoff", "physical boot", "HDMI", "recovery"]
+  "comparison": "A fresh Ubuntu 26.04 ARM64 VM with GCC 15.2.0-16ubuntu1 reproduced the earlier M-series configuration hash e93e0b7cda7efedc1bb76863041a00e08798192ce8723c75377fbce32faea6b7 and the hosted U-Boot binary hash 651351db19fcd373fc465a9796e9e9fbf9c09c46946f24c422c8d5027527e00a. A byte-level config diff against GCC 13 showed only the compiler identification comment and CONFIG_GCC_VERSION; both builds remain unqualified on hardware. The earlier assembler's exact-config guard was not bypassed.",
+  "not_verified": ["complete matching boot chain", "firmware handoff", "physical boot", "HDMI", "recovery"]
 }

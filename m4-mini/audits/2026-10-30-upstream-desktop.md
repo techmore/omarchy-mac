@@ -2,6 +2,14 @@
 
 Scope: base M4 mini `apple,j773g`, built-in HDMI, existing Gravity stack, Omarchy desktop, and the owner's existing M-series research. Source review and the local object builds below are not native boot or graphics qualification. No target machine was accessed during this audit.
 
+## Arch kernel packaging follow-up
+
+The [Omarchy Aurora package recipe at `f4ef8977`](https://github.com/omacom/omarchy-pkgs/blob/f4ef897773712f62287515b613e7a48b34dbafaa/pkgbuilds/linux-aurora/PKGBUILD) requires a kernel release ending in `-ARCH`, places the kernel image and device trees under `/usr/lib/modules/<release>/`, writes a `pkgbase` file there, stages modules with `modules_install`, and removes the build/source links. Its package also declares initramfs and m1n1 dependencies and provides/conflicts with `linux-asahi`. The local R7 research release is `7.1.13-omarchy-m4-r7+`, so it does **not** meet that boot-tool discovery contract. The local research archive is not an Arch package and must not be installed as one. A distinct M4 package, its conflict/upgrade behavior, matching loader and recovery strategy still need to be designed and tested together; a suffix change alone does not qualify the boot chain.
+
+The corrected local bootloader builder now includes the `m4_bringup` receipt field required by the existing M-series boot-chain assembler. A third clean build verified the field and reproduced both earlier stage hashes. A separate GCC 15 build reproduced the U-Boot configuration expected by the existing guard. A new research-only assembler then admitted the explicitly pinned R7 J773g DTB, checked component bytes and rejected altered inputs. These checks do not qualify the resulting boot bundle.
+
+The compiled M4 GPU module advertises the `apple,agx-t8132` device-tree alias, matching `t8132-gpu.dtsi`. That source tree intentionally leaves the GPU node and firmware-related reserved-memory nodes disabled until the loader reserves the firmware state. Likewise, the J773g HDMI path uses the T8132 DCP and the T8122-compatible DPTX PHY, both matched by the built display/PHY modules. Alias matching is source-level evidence only: the actual loader fixups, firmware state, driver probe and display have not been observed on the mini.
+
 ## Source heads and branch choice
 
 - Omarchy Mac's default [`quattro`](https://github.com/omacom/omarchy-mac/tree/ba546a61f881c1fe9d79d75ec050eab048b8cb63) is `ba546a61`; the branch used as the draft PR base, [`quattro-upstream`](https://github.com/omacom/omarchy-mac/tree/a76179cdcf1e844251eecac2708b687c486aa497), is unchanged at `a76179cd`. They are different, diverged branches: GitHub's comparison reports 768 ahead and 859 behind. Do not describe the draft as based on the current default desktop. Reconcile its intended base and packaging/boot differences before integrating a desktop.

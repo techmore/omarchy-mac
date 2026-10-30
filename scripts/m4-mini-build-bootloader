@@ -65,6 +65,7 @@ def main():
         raise ValueError('bootloader stage binaries unexpectedly match')
     receipt = {'repository': 'GravityLinux/bootloader', 'commit': COMMIT, 'artwork_commit': ARTWORK,
                'commands': commands, 'artifacts': artifacts, 'build_tag': COMMIT[:7],
+               'm4_bringup': 'NO_DISPLAY=1 for both stages; preserve firmware framebuffer',
                'status': 'source build only; no firmware handoff, installation or hardware test'}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     marker.unlink()

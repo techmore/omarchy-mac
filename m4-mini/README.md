@@ -47,7 +47,9 @@ The `--r7` build option selects its separate source lock and the [M-series targe
 scripts/m4-mini-build --config-only --r7 /path/to/r7-checkout /path/to/new-r7-build
 ```
 
-Remove `--config-only` and use a different new output directory to attempt the full build. The R7 combination has not completed Image/modules/DTBs, module linking, native boot, HDMI, networking or recovery testing.
+Remove `--config-only` and use a different new output directory to attempt the full build. The R7 Image, modules and DTBs built locally; a minimal generic ARM64 QEMU boot also passed. All 1,597 modules were staged with dependency metadata in a local research archive. See [the local build receipt](r7-build-2026-10-30.json). This is not an Arch package. Apple firmware handoff, native boot, HDMI, networking and recovery remain untested.
+
+The additional `--arch-research` option, used with `--r7`, sets the `-ARCH` release suffix required by Omarchy's boot-tool discovery; [the configuration receipt](r7-arch-config-2026-10-30.json) records its local check. An incremental build, generic QEMU boot, loading of five key modules without Apple hardware, and local research package inspection completed. A separate clean output build also completed with matching configuration and DTB and booted the generic QEMU fixture; see [the package receipt](arch-package-build-2026-10-30.json). The package was made on Ubuntu with dependency checks skipped. Omarchy's boot checker does not recognize it, and it must not be installed on a real system until boot, initramfs and recovery integration are qualified.
 
 ## Wi-Fi DMA research
 
@@ -55,10 +57,14 @@ The separate [Broadcom DMA research pull request](https://github.com/techmore/li
 
 ## Matching Mesa source
 
-The [M4 Mesa 6 research branch](https://github.com/techmore/mesa/tree/m4-mini-mesa6-research) carries the existing M-series graphics fixes on Gravity's pinned Mesa source. It retains the eight original upstream commits and their authorship. The eleven reviewed source files match the earlier Mesa 6 recipe, which previously passed an isolated ARM64 build and software tests; see [the Mesa source receipt](mesa-source-lock.json). This is not yet an Arch package or an M4 GPU/HDMI hardware result.
+The [M4 Mesa 6 research branch](https://github.com/techmore/mesa/tree/m4-mini-mesa6-research) carries the existing M-series graphics fixes on Gravity's pinned Mesa source. It retains the eight original upstream commits and their authorship. The eleven reviewed source files match the earlier Mesa 6 recipe; see [the Mesa source receipt](mesa-source-lock.json). A new local ARM64 build passed the AGX compiler groups, the existing regression fixtures and an llvmpipe software test; see [the build receipt](mesa-build-2026-10-30.json). This is not yet an Arch package or an M4 GPU/HDMI hardware result.
+
+`scripts/m4-mini-run-mesa` is the existing M-series private-prefix launcher. When placed in a compatible Mesa prefix's `bin` directory, it selects that prefix for one command and adds Gravity's `ASAHI_MESA_DEBUG=nocompress` workaround without replacing other debug flags. It passed an isolated software test and temporary Vulkan manifest check; it does not configure the greeter or compositor automatically and has not been tested with the M4 GPU.
 
 ## Bootloader research build
 
 The [Gravity bootloader fork](https://github.com/techmore/bootloader/tree/f02d4a52017915febb222539636b5b025a70407a) is separate from the installed bootloader. `scripts/m4-mini-build-bootloader` builds both stages from a fresh pinned checkout, with `NO_DISPLAY=1`, and cleans its generated build directory before switching stage settings. The earlier wrapper reused the first configuration; the corrected builder caught and avoids that failure. Two local runs produced matching bytes and passed stage-configuration checks; [the receipt](bootloader-build-2026-10-30.json) records the scope. Neither stage has been installed or tested on the M4.
 
-Gravity's pinned U-Boot source also built twice locally with matching bytes using `scripts/m4-mini-build-uboot`, copied from the M-series project. Its configuration hash differs from the earlier GCC 15 build; the existing boot-chain assembler rejects that mismatch, and the difference remains to be investigated. Details are in [the U-Boot receipt](uboot-build-2026-10-30.json). No assembled or installed boot chain is implied.
+Gravity's pinned U-Boot source also built twice locally with matching bytes using `scripts/m4-mini-build-uboot`, copied from the M-series project. A further GCC 15.2 build reproduced the earlier configuration exactly; only compiler identification fields differ from the GCC 13 configuration. Details are in [the U-Boot receipt](uboot-build-2026-10-30.json).
+
+`scripts/m4-mini-assemble-boot-research` assembled the locally built bootloader stages, exact GCC 15 U-Boot and R7 J773g tree into a byte-checked research bundle. [The receipt](boot-bundle-2026-10-30.json) records readback and negative controls. It does not install anything, and the loader, firmware handoff, boot and recovery remain unqualified on the mini.

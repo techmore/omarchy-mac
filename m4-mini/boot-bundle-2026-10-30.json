@@ -1,0 +1,9 @@
+{
+  "scope": "local J773g research boot-chain byte assembly; no installation or hardware qualification",
+  "source_commits": {"bootloader": "f02d4a52017915febb222539636b5b025a70407a", "uboot": "a2f6913694ff26908c16948af3f8372429782263", "kernel": "f46fde727002de82666741306b4e7c322fe3f0d9"},
+  "boot_bin_sha256": "c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16",
+  "boot_bin_bytes": 1500247,
+  "offsets": {"stage2": 0, "j773g_dtb": 1130496, "gzip_uboot": 1190544},
+  "checks": ["locked source and configuration receipts checked", "stage1 and stage2 settings verified", "stage2 and J773g DTB bytes and decompressed U-Boot read back exactly", "modified U-Boot config, modified DTB and incorrect stage2 setting rejected before output", "existing output rejected without modification"],
+  "limitations": ["the loader source differs from the observed Gravity package pin", "firmware and memory fixups untested", "not an Arch package, installer, ESP update, native boot or HDMI validation"]
+}
