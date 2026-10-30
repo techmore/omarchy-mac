@@ -36,6 +36,22 @@ omarchy-hw-apple-silicon || return 0
   findmnt -no TARGET "$esp" >/dev/null 2>&1 || limine_boot_fail "the ESP is not mounted at $esp"
   # This path is written to a configuration sourced by root.
   [[ $esp =~ ^/[a-zA-Z0-9_./-]+$ ]] || limine_boot_fail "invalid ESP path"
+  if [[ $kernel == "linux-omarchy-m4-research" ]]; then
+    # Do not touch an M4 loader until the mounted ESP is the booted system's
+    # ESP and prior stage-two bytes have been saved there. This is only one
+    # input to manual recovery; it does not prove the old chain is bootable.
+    system_esp=$(sudo omarchy-mac-esp) || limine_boot_fail "cannot identify the system ESP"
+    [[ $system_esp == "$esp" ]] || limine_boot_fail "the configured ESP is not the system ESP"
+    recovery="$esp/m1n1/boot.omarchy-m4-recovery.bin"
+    recovery_hash="$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+    sudo test -s "$esp/m1n1/boot.bin" && sudo test -s "$recovery" && sudo test -f "$recovery_hash" &&
+      ! sudo test -L "$recovery" && ! sudo test -L "$recovery_hash" ||
+      limine_boot_fail "the M4 chain has no saved prior stage two and SHA-256 record"
+    expected_recovery=$(sudo cat "$recovery_hash") || limine_boot_fail "cannot read the M4 recovery hash"
+    [[ $expected_recovery =~ ^[0-9a-f]{64}$ ]] &&
+      [[ $(sudo sha256sum "$recovery" | cut -d' ' -f1) == "$expected_recovery" ]] ||
+      limine_boot_fail "the saved M4 stage two does not match its SHA-256 record"
+  fi
 
   limine_backup=$(mktemp -d) || exit 1
   limine_managed=("$limine_default" "$esp/limine.conf" "$esp/EFI/Linux"

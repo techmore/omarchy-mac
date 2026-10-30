@@ -20,6 +20,7 @@ mkdir -p "$stub_bin" "$esp/EFI/BOOT" "$etc" "$test_tmp/share/limine" "$test_tmp/
 printf '#!/bin/bash\nexec "$@"\n' >"$stub_bin/sudo"
 printf '#!/bin/bash\nexit 0\n' >"$stub_bin/omarchy-hw-apple-silicon"
 printf '#!/bin/bash\necho "${TEST_KERNEL:-linux-aurora}"\n' >"$stub_bin/omarchy-mac-kernel"
+printf '#!/bin/bash\necho "${TEST_SYSTEM_ESP:-$TEST_ESP}"\n' >"$stub_bin/omarchy-mac-esp"
 printf '#!/bin/bash\necho "systemctl $*" >>"$TEST_CALLS"\n' >"$stub_bin/systemctl"
 printf '#!/bin/bash\necho "limine-snapper-sync $*" >>"$TEST_CALLS"\n' >"$stub_bin/limine-snapper-sync"
 cat >"$stub_bin/findmnt" <<'SH'
@@ -375,6 +376,22 @@ ln -s "$ROOT/bin/omarchy-mac-limine-deploy" "$stub_bin/omarchy-mac-limine-deploy
 mkdir -p "$esp/EFI/BOOT"
 printf 'prior recovery EFI\n' >"$esp/EFI/BOOT/grub-aa64.efi"
 printf 'foreign menu\n/GRUB (recovery)\n    protocol: efi_chainload\n    path: boot():/EFI/BOOT/grub-aa64.efi\n' >"$esp/limine.conf"
+mkdir -p "$esp/m1n1"
+printf 'current stage two\n' >"$esp/m1n1/boot.bin"
+cp "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader"
+cp "$esp/limine.conf" "$test_tmp/preflight-menu"
+if TEST_KERNEL=linux-omarchy-m4-research run 2>"$test_tmp/err"; then fail "M4 requires saved stage two before activation"; fi
+grep -Fq 'no saved prior stage two' "$test_tmp/err" || fail "M4 reports the missing stage-two backup"
+cmp -s "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader" && cmp -s "$esp/limine.conf" "$test_tmp/preflight-menu" ||
+  fail "missing recovery fails before changing boot files"
+printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
+if TEST_KERNEL=linux-omarchy-m4-research TEST_SYSTEM_ESP=/wrong-esp run 2>"$test_tmp/err"; then fail "M4 refuses another ESP"; fi
+grep -Fq 'not the system ESP' "$test_tmp/err" || fail "M4 reports the mismatched system ESP"
+printf 'corrupt\n' >>"$esp/m1n1/boot.omarchy-m4-recovery.bin"
+if TEST_KERNEL=linux-omarchy-m4-research run 2>"$test_tmp/err"; then fail "M4 refuses a corrupted stage-two backup"; fi
+grep -Fq 'does not match its SHA-256' "$test_tmp/err" || fail "M4 reports the corrupt stage-two backup"
+printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
 TEST_KERNEL=linux-omarchy-m4-research run || fail "M4 activates with a fallback fixture"
 grep -Fxq 'MKINITCPIO_FALLBACK="linux-omarchy-m4-research"' "$etc/limine" || fail "M4 enables its fallback UKI"
 grep -Fxq '/GRUB (recovery)' "$esp/limine.conf" || fail "M4 preserves the prior recovery entry"

@@ -20,6 +20,7 @@
     "fixtures reject missing or incorrect default and fallback storage modules, including embedded UKI initramfs images; built-in and compressed module names pass",
     "fixtures reject a missing or corrupt saved stage two, a missing or corrupt fallback UKI, and a changed fallback command line",
     "Limine fixtures reject a different default entry, remembered selection or an entry ahead of Omarchy, preserve an existing GRUB recovery entry and EFI file, and roll back on a missing fallback UKI",
+    "M4 Limine activation refuses an unrelated ESP, absent stage-two backup or mismatched recovery hash before changing boot files",
     "vendor firmware selector fixtures prefer the booted ESP PARTUUID and refuse to substitute the image UUID when that partition is missing",
     "a disposable chroot ran the actual early firmware helper with fake mount and device fixtures: chosen ESP selection, missing partition, mount failure and corrupt archive paths passed",
     "offline recovery capsule fixtures check copying, independent identity, integrity, missing files, symlinks and path traversal",
@@ -27,6 +28,7 @@
   ],
   "mkinitcpio_test_scope": "Ubuntu 24.04 ARM64 VM; private build from upstream commit 68ebfd2688eb356468232d5495e35b1463927b5d; test-only no-op hook plus autodetect, not the production hook set or a bootable image; Ubuntu kmod tools exposed in private PATH",
   "mkinitcpio_test_image_sha256": "22dc6b219fc8e32826c9c70817aa2410d97a58b81624fe344007ceec9d1a2f8a",
+  "boot_suite_scope": "In the ARM64 VM, the broader boot package suite passed 305 checks before its final locale fixture failed under Ubuntu dash; that fixture passed separately with Bash as sh, matching Arch, and the remaining update verifier passed separately. DTC 1.7.2 and umask 022 were supplied for the suite. The final M4 GRUB guard and Limine recovery preflight were then rerun in focused fixtures. Optional Arch-container initramfs and block-device tests were skipped; the separate firmware chroot runtime fixture was run explicitly.",
   "limitations": [
     "fixture checks are not a native boot or a working recovery test; the firmware chroot uses fake device nodes and mount commands",
     "no snapshot of the mini or verified prior boot chain has been captured",
