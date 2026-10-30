@@ -14,7 +14,7 @@ To check a clean checkout of the exact candidate and an optional resolved, out-o
 python3 scripts/m4-mini-source-check /path/to/kernel-checkout --config /path/to/build/.config
 ```
 
-The checker requires the locked commit, clean source, six matching source hashes, Apple ARM64 and 16 KiB pages, Rust, the Apple display driver and the M4 GPU driver. Omitting `--config` checks source only. It neither builds nor installs anything, and passing is not proof of boot, HDMI, GPU operation or recovery.
+The checker requires the locked commit, clean source, seven matching source hashes, Apple ARM64 and 16 KiB pages, Rust, the Apple display driver, the M4 GPU driver and the Apple DPTX PHY. Omitting `--config` checks source only. It neither builds nor installs anything, and passing is not proof of boot, HDMI, GPU operation or recovery.
 
 The candidate J773g device tree compiled locally with Apple clang and dtc; its readback contains HDMI-A on PHY 4 and the SMC reboot node. Warnings, commands and the output hash are recorded in [the build receipt](dtb-build-2026-10-30.json). The resulting DTB has not been installed or booted.
 
@@ -27,4 +27,4 @@ scripts/m4-mini-build /path/to/clean-kernel /path/to/another-new-build-dir 3
 
 The first command resolves and checks the configuration only; the second builds the kernel image, modules and device trees. Each requires a new output directory outside the source checkout and does not install anything. The configuration fragments come from the existing [M-series research branch](https://github.com/techmore/ElementaryOS_MSeries/tree/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/m4-mini/gravity). A local ARM64 Linux VM reproduced the same resolved configuration as the initial build attempt; see [the configuration receipt](config-check-2026-10-30.json). A successful source build still requires matching graphics and boot components and hardware qualification.
 
-The M4 GPU and Apple display driver objects compiled in a local ARM64 Linux VM; hashes and limitations are recorded in [the object-build receipt](display-objects-2026-10-30.json). These relocatable objects are not finished kernel modules, and this does not establish display output.
+The M4 GPU, Apple display driver and Apple DPTX PHY objects compiled in a local ARM64 Linux VM; hashes and limitations are recorded in [the object-build receipt](display-objects-2026-10-30.json). These relocatable objects are not finished kernel modules, and this does not establish display output.

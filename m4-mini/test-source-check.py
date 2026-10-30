@@ -42,10 +42,13 @@ class SourceCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = pathlib.Path(tmp) / 'config'
             good = ('CONFIG_ARCH_APPLE=y\nCONFIG_ARM64_16K_PAGES=y\nCONFIG_RUST=y\n'
-                    'CONFIG_DRM_APPLE=m\nCONFIG_DRM_ASAHI_M4=m\n')
+                    'CONFIG_DRM_APPLE=m\nCONFIG_DRM_ASAHI_M4=m\nCONFIG_PHY_APPLE_DPTX=m\n')
             config.write_text(good)
             checker.check_config(config)
             config.write_text(good.replace('CONFIG_DRM_ASAHI_M4=m', '# CONFIG_DRM_ASAHI_M4 is not set'))
+            with self.assertRaises(ValueError):
+                checker.check_config(config)
+            config.write_text(good.replace('CONFIG_PHY_APPLE_DPTX=m', '# CONFIG_PHY_APPLE_DPTX is not set'))
             with self.assertRaises(ValueError):
                 checker.check_config(config)
             config.write_text(good.replace('CONFIG_ARM64_16K_PAGES=y', 'CONFIG_ARM64_4K_PAGES=y'))

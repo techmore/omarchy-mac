@@ -32,7 +32,7 @@ def check_config(path):
     for key in ('CONFIG_ARCH_APPLE', 'CONFIG_ARM64_16K_PAGES', 'CONFIG_RUST'):
         if values.get(key) != 'y':
             raise ValueError(f'{key} must be enabled')
-    for key in ('CONFIG_DRM_APPLE', 'CONFIG_DRM_ASAHI_M4'):
+    for key in ('CONFIG_DRM_APPLE', 'CONFIG_DRM_ASAHI_M4', 'CONFIG_PHY_APPLE_DPTX'):
         if values.get(key) not in ('y', 'm'):
             raise ValueError(f'{key} must be built in or modular')
 

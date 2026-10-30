@@ -13,7 +13,8 @@
     "CONFIG_ARM64_16K_PAGES": "y",
     "CONFIG_RUST": "y",
     "CONFIG_DRM_APPLE": "m",
-    "CONFIG_DRM_ASAHI_M4": "m"
+    "CONFIG_DRM_ASAHI_M4": "m",
+    "CONFIG_PHY_APPLE_DPTX": "m"
   },
   "result": "A second config-only run of scripts/m4-mini-build produced the same resolved configuration and passed the source and configuration checker."
 }
