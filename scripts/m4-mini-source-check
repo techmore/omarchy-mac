@@ -23,7 +23,7 @@ def check_source(source, lock):
             raise ValueError(f'source digest mismatch: {name}')
 
 
-def check_config(path):
+def check_config(path, extra=None):
     values = {}
     for line in path.read_text().splitlines():
         if line.startswith('CONFIG_') and '=' in line:
@@ -35,18 +35,22 @@ def check_config(path):
     for key in ('CONFIG_DRM_APPLE', 'CONFIG_DRM_ASAHI_M4', 'CONFIG_PHY_APPLE_DPTX'):
         if values.get(key) not in ('y', 'm'):
             raise ValueError(f'{key} must be built in or modular')
+    for key, allowed in (extra or {}).items():
+        if values.get(key) not in allowed:
+            raise ValueError(f'{key} must be one of {allowed}')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path, help='clean candidate kernel Git checkout')
     parser.add_argument('--config', type=Path, help='resolved kernel .config, built out of tree')
+    parser.add_argument('--lock', type=Path, default=LOCK, help='candidate source lock (default: baseline)')
     args = parser.parse_args()
     try:
-        lock = json.loads(LOCK.read_text())
+        lock = json.loads(args.lock.read_text())
         check_source(args.source, lock)
         if args.config:
-            check_config(args.config)
+            check_config(args.config, lock.get('required_config'))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f'M4 source check failed: {exc}', file=sys.stderr)
         return 1

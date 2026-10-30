@@ -45,6 +45,9 @@ class SourceCheck(unittest.TestCase):
                     'CONFIG_DRM_APPLE=m\nCONFIG_DRM_ASAHI_M4=m\nCONFIG_PHY_APPLE_DPTX=m\n')
             config.write_text(good)
             checker.check_config(config)
+            with self.assertRaises(ValueError):
+                checker.check_config(config, {'CONFIG_APPLE_WATCHDOG': ['y']})
+            checker.check_config(config, {'CONFIG_DRM_APPLE': ['m']})
             config.write_text(good.replace('CONFIG_DRM_ASAHI_M4=m', '# CONFIG_DRM_ASAHI_M4 is not set'))
             with self.assertRaises(ValueError):
                 checker.check_config(config)

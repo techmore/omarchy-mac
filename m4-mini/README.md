@@ -36,3 +36,15 @@ The [deeper upstream desktop audit](audits/2026-10-30-upstream-desktop.md) recor
 The [desktop applications follow-up](SIGNAL-RELEASE-GOAL.md) tracks the owner’s separate SDK Messages/Signal app and F5 speech workflow for review after M4 bring-up.
 
 The original candidate completed a full local Image, modules and device-tree build; [the build receipt](kernel-build-2026-10-30.json) records hashes, warnings and configuration gaps. This build does not include the reconciled scheduler/idle/Bluetooth work described in the audit and has not been installed or booted.
+
+## R7 integration candidate
+
+A separate [R7 research kernel branch](https://github.com/techmore/linux-m1pro-touchid/tree/m4-mini-aurora-r7-research) adds the M-series scheduler, M4 idle and BCM4388 Bluetooth adaptations to the baseline. The previously misplaced context-free insertions were reconciled before publication; all 18 published source files were checked against the locally compiled scratch version. This branch is not a qualified kernel or an installer input.
+
+The `--r7` build option selects its separate source lock and the [M-series target fragment](https://github.com/techmore/ElementaryOS_MSeries/blob/c6fd172c1abc1a31dbf9c70eef79c3bd7896cd8c/mseries/m4-mini/gravity/elementary-target.config), including both Ethernet driver options, a built-in Apple watchdog and the live-media options. A local config-only run passed; [the receipt](r7-config-2026-10-30.json) identifies its exact configuration. For example:
+
+```sh
+scripts/m4-mini-build --config-only --r7 /path/to/r7-checkout /path/to/new-r7-build
+```
+
+Remove `--config-only` and use a different new output directory to attempt the full build. The R7 combination has not completed Image/modules/DTBs, module linking, native boot, HDMI, networking or recovery testing.

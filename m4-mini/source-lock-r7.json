@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "board": "apple,j773g",
+  "status": "integration-research-only",
+  "kernel": {
+    "repository": "https://github.com/techmore/linux-m1pro-touchid",
+    "branch": "m4-mini-aurora-r7-research",
+    "commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+    "gravity_base": "4fc326f6c25ccceb7515e2635c22e01fde5d3bac",
+    "candidate_base": "6363990c4a4535b36dccd6c9a972e124861274fa"
+  },
+  "file_sha256": {
+    "arch/arm64/boot/dts/apple/t8132-j773g.dts": "f6ddc873d7b4493dba0071df0f4e58b8513d30b26dfc4aa240d0b0e6a4dd8540",
+    "arch/arm64/boot/dts/apple/t8132.dtsi": "79e6f3ad4f972c4ce3761be2aaecffebe8e61377e18b69bd54bb09c3f7a93081",
+    "arch/arm64/mm/pageattr.c": "c8fbba7830d316ca68a577d3eec2ba63e89e1d412e537bee9c41a84de064d890",
+    "arch/arm64/mm/flush.c": "50519818d672bd618e69627213403d021d10130ad9611d5e12199574e3f25d8e",
+    "drivers/gpu/drm/asahi/g16_drm.rs": "b488b1520e3eae3b6e1161eec4e9dd64f4b233bd2a54c73044602a362c290554",
+    "drivers/gpu/drm/asahi/g16_runtime.rs": "1f5c6760de0d72ea898eb66b3e2f7484b1d9c9ec838f99f7318b6894a2503f47",
+    "drivers/phy/apple/dptx.c": "e54f3311941721ccf91e3ac2cf9919da1ea24b5443b768d83cc700641524dfa6"
+  },
+  "required_config": {
+    "CONFIG_AQTION": [
+      "y",
+      "m"
+    ],
+    "CONFIG_TIGON3": [
+      "y",
+      "m"
+    ],
+    "CONFIG_APPLE_WATCHDOG": [
+      "y"
+    ],
+    "CONFIG_BLK_DEV_SR": [
+      "y"
+    ],
+    "CONFIG_ISO9660_FS": [
+      "y"
+    ]
+  }
+}
