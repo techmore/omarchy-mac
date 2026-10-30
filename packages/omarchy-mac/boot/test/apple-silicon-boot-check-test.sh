@@ -346,6 +346,7 @@ system() {
       for name in dm-mod dm-bufio dm-crypt dm-integrity; do
         printf '/usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name"
       done
+      printf '/usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver"
       printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/apple/appledrm.ko\n' "$kver"
       printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi_m4.ko\n' "$kver"
       printf '/usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver"
@@ -365,6 +366,7 @@ system() {
     for name in dm-mod dm-bufio dm-crypt dm-integrity; do
       printf 'usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
     done
+    printf 'usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver" >>"$test_tmp/initramfs"
     printf 'usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi_m4.ko\n' "$kver" >>"$test_tmp/initramfs"
     printf 'usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver" >>"$test_tmp/initramfs"
     printf 'usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver" >>"$test_tmp/initramfs"
@@ -379,6 +381,7 @@ kernel/drivers/md/dm-mod.ko:
 kernel/drivers/md/dm-bufio.ko: kernel/drivers/md/dm-mod.ko
 kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko kernel/lib/crypto/libmd5.ko
 kernel/drivers/md/dm-integrity.ko: kernel/drivers/md/dm-bufio.ko kernel/crypto/async_tx/async_xor.ko
+kernel/fs/btrfs/btrfs.ko:
 kernel/drivers/gpu/drm/apple/appledrm.ko:
 kernel/drivers/gpu/drm/asahi/asahi_m4.ko:
 kernel/drivers/phy/apple/phy-apple-dptx.ko:
@@ -591,6 +594,10 @@ system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 initramfs without Apple NVMe" "missing required M4 storage module nvme-apple"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/btrfs\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without Btrfs" "missing required M4 storage module btrfs"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i '/phy-apple-dptx\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research

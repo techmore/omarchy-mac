@@ -21,7 +21,7 @@ KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
 KERNEL_SHA = '539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833'
 STAGE1_SHA = 'ec46b6981aa88320c2548b48e0584cda04e7615cbed74b3fa18a724522a1d8ab'
 REQUIRED = ('nvme-apple', 'nvme-core', 'apple-sart', 'dm-mod', 'dm-bufio',
-            'dm-crypt', 'dm-integrity', 'appledrm', 'asahi-m4', 'phy-apple-dptx')
+            'dm-crypt', 'dm-integrity', 'btrfs', 'appledrm', 'asahi-m4', 'phy-apple-dptx')
 GUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 

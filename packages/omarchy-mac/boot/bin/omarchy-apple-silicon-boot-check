@@ -226,7 +226,7 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
         gsub(/_/, "-", name); if (name == module) found = 1
       } END { exit !found }' "$1"
     }
-    for required in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity appledrm asahi-m4 phy-apple-dptx; do
+    for required in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity btrfs appledrm asahi-m4 phy-apple-dptx; do
       category=storage
       case $required in appledrm | asahi-m4 | phy-apple-dptx) category=display ;; esac
       if module_list_has "$workdir/kernel-files"; then
