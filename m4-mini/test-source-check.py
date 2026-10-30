@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import hashlib
+from importlib.machinery import SourceFileLoader
+import pathlib
+import subprocess
+import tempfile
+import unittest
+
+HERE = pathlib.Path(__file__).resolve().parent
+checker = SourceFileLoader('m4_source_check', str(HERE.parent / 'scripts/m4-mini-source-check')).load_module()
+
+
+class SourceCheck(unittest.TestCase):
+    def test_source_lock_rejects_changed_and_untracked_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'file').write_text('original\n')
+            subprocess.run(['git', '-C', str(root), 'add', 'file'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                            'commit', '-qm', 'fixture'], check=True)
+            head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+            lock = {'kernel': {'commit': head}, 'file_sha256': {'file': hashlib.sha256(b'original\n').hexdigest()}}
+            checker.check_source(root, lock)
+            (root / 'file').write_text('changed\n')
+            with self.assertRaises(ValueError):
+                checker.check_source(root, lock)
+            (root / 'file').write_text('original\n')
+            (root / 'extra').write_text('extra')
+            with self.assertRaises(ValueError):
+                checker.check_source(root, lock)
+            (root / 'extra').unlink()
+            lock['file_sha256']['file'] = '0' * 64
+            with self.assertRaises(ValueError):
+                checker.check_source(root, lock)
+            lock['file_sha256']['file'] = hashlib.sha256(b'original\n').hexdigest()
+            lock['kernel']['commit'] = '0' * 40
+            with self.assertRaises(ValueError):
+                checker.check_source(root, lock)
+
+    def test_config_requires_the_m4_graphics_stack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / 'config'
+            good = ('CONFIG_ARCH_APPLE=y\nCONFIG_ARM64_16K_PAGES=y\nCONFIG_RUST=y\n'
+                    'CONFIG_DRM_APPLE=m\nCONFIG_DRM_ASAHI_M4=m\n')
+            config.write_text(good)
+            checker.check_config(config)
+            config.write_text(good.replace('CONFIG_DRM_ASAHI_M4=m', '# CONFIG_DRM_ASAHI_M4 is not set'))
+            with self.assertRaises(ValueError):
+                checker.check_config(config)
+            config.write_text(good.replace('CONFIG_ARM64_16K_PAGES=y', 'CONFIG_ARM64_4K_PAGES=y'))
+            with self.assertRaises(ValueError):
+                checker.check_config(config)
+
+
+if __name__ == '__main__':
+    unittest.main()
