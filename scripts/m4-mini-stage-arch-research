@@ -2,8 +2,13 @@
 # Stage an Omarchy-shaped kernel tree for inspection; never install or package it.
 set -euo pipefail
 
+rootfix=0
+if [[ ${1:-} == --rootfix ]]; then
+  rootfix=1
+  shift
+fi
 if (( $# != 3 )); then
-  echo "Usage: $0 CLEAN_R7_KERNEL_CHECKOUT ARCH_RESEARCH_BUILD NEW_OUTPUT_DIRECTORY" >&2
+  echo "Usage: $0 [--rootfix] CLEAN_R7_KERNEL_CHECKOUT ARCH_RESEARCH_BUILD NEW_OUTPUT_DIRECTORY" >&2
   exit 2
 fi
 source_dir=$(realpath "$1")
@@ -15,11 +20,16 @@ case "$output_dir/" in
   "$source_dir/"*|"$build_dir/"*) echo 'Output must be outside the source and build directories' >&2; exit 1 ;;
 esac
 [[ ! -e $output_dir && ! -L $output_dir ]] || { echo 'New output directory required' >&2; exit 1; }
-python3 "$script_dir/m4-mini-source-check" "$source_dir" --config "$build_dir/.config" \
-  --lock "$repo_dir/m4-mini/source-lock-r7.json"
+lock="$repo_dir/m4-mini/source-lock-r7.json"
+expected_release=7.1.13-omarchy-m4-r7-ARCH
+if (( rootfix )); then
+  lock="$repo_dir/m4-mini/source-lock-r7-rootfix.json"
+  expected_release=7.1.13-omarchy-m4-r7-rootfix-ARCH
+fi
+python3 "$script_dir/m4-mini-source-check" "$source_dir" --config "$build_dir/.config" --lock "$lock"
 base=(make -C "$source_dir" "O=$build_dir" ARCH=arm64 CC=clang LD=ld HOSTCC=clang LOCALVERSION=)
 release=$("${base[@]}" -s kernelrelease)
-[[ $release == "7.1.13-omarchy-m4-r7-ARCH" ]] || { echo 'Unexpected kernel release' >&2; exit 1; }
+[[ $release == "$expected_release" ]] || { echo 'Unexpected kernel release' >&2; exit 1; }
 for file in "$build_dir/arch/arm64/boot/Image" "$build_dir/arch/arm64/boot/dts/apple/t8132-j773g.dtb" \
             "$build_dir/modules.order" "$build_dir/Module.symvers" "$build_dir/System.map"; do
   [[ -f $file ]] || { echo "Build output missing: $file" >&2; exit 1; }
@@ -48,12 +58,17 @@ while IFS= read -r module; do
     echo "Staged module missing: $module" >&2; exit 1;
   }
 done < "$build_dir/modules.order"
-for module in \
+modules=(
   drivers/gpu/drm/asahi/asahi_m4.ko \
   drivers/gpu/drm/apple/appledrm.ko \
   drivers/phy/apple/phy-apple-dptx.ko \
   drivers/net/ethernet/aquantia/atlantic/atlantic.ko \
-  drivers/net/ethernet/broadcom/tg3.ko; do
+  drivers/net/ethernet/broadcom/tg3.ko
+)
+if (( rootfix )); then
+  modules+=(drivers/md/dm-crypt.ko drivers/md/dm-integrity.ko)
+fi
+for module in "${modules[@]}"; do
   vermagic=$(modinfo -F vermagic "$modules_dir/kernel/$module")
   [[ ${vermagic%% *} == "$release" ]] || { echo "Module release mismatch: $module" >&2; exit 1; }
 done
