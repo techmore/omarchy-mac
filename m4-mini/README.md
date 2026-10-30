@@ -30,3 +30,5 @@ The first command resolves and checks the configuration only; the second builds 
 The M4 GPU, Apple display driver and Apple DPTX PHY objects compiled in a local ARM64 Linux VM; hashes and limitations are recorded in [the object-build receipt](display-objects-2026-10-30.json). These relocatable objects are not finished kernel modules, and this does not establish display output.
 
 The planned Apple and Logitech keyboard, mouse and trackpad pairing experience is tracked in [the input release goal](INPUT-RELEASE-GOAL.md). It is not yet implemented or qualified on the mini.
+
+The [deeper upstream desktop audit](audits/2026-10-30-upstream-desktop.md) records the current Omarchy and Aurora branch differences, missing candidate configuration and a scheduler patch-placement conflict.
