@@ -33,4 +33,9 @@ done
 if TEST_PACKAGES='' TEST_PACMAN_FAIL=1 PATH="$tmp/bin:$PATH" "$coexistence_guard" >"$tmp/out" 2>&1; then
   fail "an unreadable package database is refused"
 fi
+printf '#!/bin/sh\nexit 2\n' >"$tmp/bin/grep"
+chmod +x "$tmp/bin/grep"
+if TEST_PACKAGES=linux-aurora PATH="$tmp/bin:$PATH" "$coexistence_guard" >"$tmp/out" 2>&1; then
+  fail "an error while examining packages is refused"
+fi
 pass "the M4 guards refuse research packages and unsafe coexistence transactions"
