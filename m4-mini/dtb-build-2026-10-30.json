@@ -1,0 +1,27 @@
+{
+  "scope": "local device-tree compilation only",
+  "kernel_commit": "6363990c4a4535b36dccd6c9a972e124861274fa",
+  "compiler": "Apple clang 21.0.0",
+  "dtc": "1.8.1",
+  "source_paths": ["arch/arm64/boot/dts/apple", "include/dt-bindings"],
+  "commands": [
+    "git archive <kernel_commit> arch/arm64/boot/dts/apple include/dt-bindings | tar -x -C <new-directory>",
+    "clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I include arch/arm64/boot/dts/apple/t8132-j773g.dts -o <preprocessed.dts>",
+    "dtc -I dts -O dtb -o <output.dtb> <preprocessed.dts>",
+    "fdtget <output.dtb> / compatible",
+    "fdtget <output.dtb> /soc/dcp@30ae00000 status",
+    "fdtget <output.dtb> /soc/dcp@30ae00000 apple,connector-type",
+    "fdtget -t u <output.dtb> /soc/dcp@30ae00000 apple,dptx-phy",
+    "fdtget <output.dtb> /soc/smc@38c600000/reboot compatible"
+  ],
+  "dtb_sha256": "734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3",
+  "checks": {
+    "compatible": "apple,j773g apple,t8132 apple,arm-platform",
+    "dcp_status": "okay",
+    "connector_type": "HDMI-A",
+    "dptx_phy": 4,
+    "smc_reboot_compatible": "apple,smc-reboot"
+  },
+  "warnings": ["simple_bus_reg for audio, display subsystem and AIC", "avoid_unnecessary_addr_size for three DCP nodes", "alias_paths for three aliases"],
+  "not_verified": ["kernel build", "loader fixups", "firmware handoff", "physical HDMI", "GPU", "boot", "reboot", "recovery"]
+}

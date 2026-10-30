@@ -15,3 +15,5 @@ python3 scripts/m4-mini-source-check /path/to/kernel-checkout --config /path/to/
 ```
 
 The checker requires the locked commit, clean source, six matching source hashes, Apple ARM64 and 16 KiB pages, Rust, the Apple display driver and the M4 GPU driver. Omitting `--config` checks source only. It neither builds nor installs anything, and passing is not proof of boot, HDMI, GPU operation or recovery.
+
+The candidate J773g device tree compiled locally with Apple clang and dtc; its readback contains HDMI-A on PHY 4 and the SMC reboot node. Warnings, commands and the output hash are recorded in [the build receipt](dtb-build-2026-10-30.json). The resulting DTB has not been installed or booted.
