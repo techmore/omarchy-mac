@@ -68,7 +68,19 @@ research package cannot protect that transaction. An uninstalled, overridden
 or bypassed hook, a differently named package, an updater invoked outside these
 known hooks, a nonstandard pacman database and interrupted operations still
 need a coherent solution. Do not use these guards as evidence that the
-packages can be installed.
+packages can be installed. In particular, an Arch-side guard cannot stop an
+updater run by the existing Gravity installation.
+
+Asahi's [boot-process guide](https://github.com/AsahiLinux/docs/blob/main/docs/alt/boot-process-guide.md)
+describes stage 1's fixed system-ESP selection and stage 2's shared
+`m1n1/boot.bin`. Its [platform guidance](https://asahilinux.org/docs/platform/quirks/)
+also says that, when multiple OSes use one UEFI partition for experimental or
+recovery purposes, only one OS should own and update its system ESP. A
+separate installation with its own Apple boot entry and system ESP is the
+normal multi-OS model; a shared-ESP experiment instead needs a coordinated
+single owner that neither distro can overwrite independently. Neither layout
+has been designed or tested for this mini here, and no partition or stage-1
+changes are authorized by this audit.
 
 ## Full Omarchy initramfs
 
