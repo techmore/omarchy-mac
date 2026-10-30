@@ -953,7 +953,21 @@ bind_read_only() {
 
 esp_uuid=""
 esp_node=$(path /proc/device-tree/chosen/asahi,efi-system-partition)
-[[ ! -r $esp_node ]] || esp_uuid=$(tr -d '\0' <"$esp_node")
+gravity_node=$(path /proc/device-tree/chosen/gravity,efi-system-partition)
+gravity_uuid=""
+if [[ -e $esp_node ]]; then
+  [[ -r $esp_node ]] || fail "cannot read the Asahi system ESP identifier"
+  esp_uuid=$(tr -d '\0' <"$esp_node" | tr '[:upper:]' '[:lower:]')
+  [[ -n $esp_uuid ]] || fail "the Asahi system ESP identifier is empty"
+fi
+if [[ -e $gravity_node ]]; then
+  [[ -r $gravity_node ]] || fail "cannot read the Gravity system ESP identifier"
+  gravity_uuid=$(tr -d '\0' <"$gravity_node" | tr '[:upper:]' '[:lower:]')
+  [[ -n $gravity_uuid ]] || fail "the Gravity system ESP identifier is empty"
+fi
+[[ -z $esp_uuid || -z $gravity_uuid || $esp_uuid == "$gravity_uuid" ]] ||
+  fail "the Asahi and Gravity system ESP identifiers disagree"
+esp_uuid=${esp_uuid:-$gravity_uuid}
 if [[ -e $(path /boot/efi/.builder) || -e $(path /boot/.builder) || -z $esp_uuid ]]; then
   if [[ -e $(path /boot/efi/m1n1) ]]; then
     esp=/boot/efi

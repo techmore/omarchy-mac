@@ -1,6 +1,24 @@
 #!/bin/sh
 # Select the booted OS's ESP; do not use another installation's firmware.
 # Arguments: /dev/disk, m1n1's chosen PARTUUID (possibly empty), image UUID.
+omarchy_vendorfw_chosen_esp() (
+    chosen_dir=$1
+    asahi=
+    gravity=
+    for vendor in asahi gravity; do
+        node="$chosen_dir/$vendor,efi-system-partition"
+        if [ -e "$node" ]; then
+            [ -r "$node" ] || exit 1
+            value=$(tr -d '\000' <"$node" | tr 'A-F' 'a-f')
+            [ -n "$value" ] || exit 1
+            case "$value" in *[!0-9a-f-]*) exit 1 ;; esac
+            case "$vendor" in asahi) asahi=$value ;; gravity) gravity=$value ;; esac
+        fi
+    done
+    [ -z "$asahi" ] || [ -z "$gravity" ] || [ "$asahi" = "$gravity" ] || exit 1
+    printf '%s\n' "${asahi:-$gravity}"
+)
+
 omarchy_vendorfw_device() {
     disk_dir=$1
     partuuid=$2

@@ -10,6 +10,7 @@ test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp"' EXIT
 stub_bin=$test_tmp/bin
 esp_node=$test_tmp/esp-partuuid
+gravity_node=$test_tmp/gravity-esp-partuuid
 mounts=$test_tmp/mounts
 mkdir -p "$stub_bin"
 
@@ -21,7 +22,8 @@ SH
 chmod +x "$stub_bin/findmnt"
 
 find_esp() {
-  OMARCHY_ESP_PARTUUID_FILE="$esp_node" TEST_MOUNTS="$mounts" PATH="$stub_bin:$PATH" bash "$ROOT/bin/omarchy-mac-esp" 2>"$test_tmp/err"
+  OMARCHY_ESP_PARTUUID_FILE="$esp_node" OMARCHY_ESP_GRAVITY_PARTUUID_FILE="$gravity_node" \
+    TEST_MOUNTS="$mounts" PATH="$stub_bin:$PATH" bash "$ROOT/bin/omarchy-mac-esp" 2>"$test_tmp/err"
 }
 
 printf '5F2B0C3E-0002\0' >"$esp_node"
@@ -36,6 +38,15 @@ printf '/boot/efi vfat /EFI 5f2b0c3e-0002\n' >"$mounts"
 grep -Fq 'PARTUUID=5f2b0c3e-0002' "$test_tmp/err" || fail "the missing ESP is named"
 printf '/boot/efi autofs / \n/boot/efi vfat / 5f2b0c3e-0002\n' >"$mounts"
 [[ $(find_esp) == /boot/efi ]] || fail "an ESP mounted over its automount point is found"
+printf '5f2b0c3e-0002\0' >"$gravity_node"
+[[ $(find_esp) == /boot/efi ]] || fail "matching Asahi and Gravity ESP names are accepted"
+printf '11111111-0001\0' >"$gravity_node"
+! find_esp >/dev/null || fail "conflicting Asahi and Gravity ESP names are refused"
+grep -Fq 'identifiers disagree' "$test_tmp/err" || fail "conflicting ESP identifiers are reported"
+rm "$esp_node"
+printf '/boot vfat / 11111111-0001\n' >"$mounts"
+[[ $(find_esp) == /boot ]] || fail "the Gravity-only ESP name is accepted"
+rm "$gravity_node"
 rm -f "$esp_node"
 printf '/boot vfat / 11111111-0001\n' >"$mounts"
 [[ $(find_esp) == /boot ]] || fail "without a device tree name the FAT filesystem at /boot is the ESP"

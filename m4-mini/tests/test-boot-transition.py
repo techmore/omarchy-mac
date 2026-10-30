@@ -66,7 +66,8 @@ class TransitionTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             recovery['create'](args)
         self.config = self.root / 'm1n1.conf'
-        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\ndisplay=2560x1600\n')
+        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\n'
+                               f'chosen.gravity,efi-system-partition={TARGET_PARTUUID}\ndisplay=2560x1600\n')
 
     def run_transition(self, output, target=TARGET_PARTUUID):
         argv = ['transition', '--bundle', str(self.bundle), '--capsule', str(self.capsule),
@@ -85,7 +86,8 @@ class TransitionTest(unittest.TestCase):
         self.assertFalse(receipt['stage1_target_pairing_verified'])
         self.assertEqual(receipt['recovery_esp_partuuid'], PARTUUID)
         self.assertEqual(receipt['system_esp_partuuid'], TARGET_PARTUUID)
-        self.config.write_text(f'chosen.asahi,efi-system-partition={PARTUUID}\n')
+        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\n'
+                               f'chosen.gravity,efi-system-partition={PARTUUID}\n')
         refused = self.root / 'refused'
         self.assertEqual(self.run_transition(refused), 1)
         self.assertFalse(refused.exists())
@@ -95,7 +97,8 @@ class TransitionTest(unittest.TestCase):
         self.assertEqual(self.run_transition(refused), 1)
         self.assertFalse(refused.exists())
         (self.capsule / 'boot/initramfs').write_bytes(b'corrupted')
-        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\n')
+        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\n'
+                               f'chosen.gravity,efi-system-partition={TARGET_PARTUUID}\n')
         self.assertEqual(self.run_transition(refused), 1)
         self.assertFalse(refused.exists())
 

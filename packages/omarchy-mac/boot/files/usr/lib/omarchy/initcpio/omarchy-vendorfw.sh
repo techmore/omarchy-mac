@@ -1,8 +1,7 @@
 #!/usr/bin/sh
 set -eu
-dt=/proc/device-tree/chosen/asahi,efi-system-partition
-[ -e "$dt" ] || exit 0
-esp=$(tr -d '\0' <"$dt")
+. /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+esp=$(omarchy_vendorfw_chosen_esp /proc/device-tree/chosen) || exit 0
 [ -n "$esp" ] || exit 0
 mnt=/run/omarchy-vendorfw-esp
 mkdir -p "$mnt"

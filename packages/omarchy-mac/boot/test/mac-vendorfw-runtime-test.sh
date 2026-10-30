@@ -65,6 +65,19 @@ grep -Fq 'mount -o ro /dev/disk/by-partuuid/abcdef01-2222 ' "$root/test/calls" |
 grep -Fq 'umount /run/omarchy-vendorfw-extract' "$root/test/calls" || fail "firmware tmpfs was cleaned up"
 
 reset_helper
+mv "$root/proc/device-tree/chosen/asahi,efi-system-partition" "$root/proc/device-tree/chosen/gravity,efi-system-partition"
+run_helper || fail "the Gravity-only ESP is handled"
+grep -Fq 'mount -o ro /dev/disk/by-partuuid/abcdef01-2222 ' "$root/test/calls" || fail "Gravity's chosen ESP is mounted"
+
+reset_helper
+printf '12345678-0001\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
+run_helper || fail "conflicting ESP identifiers do not block the prompt"
+[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "conflicting ESP identifiers are recorded"
+[[ ! -e $root/test/calls ]] || fail "conflicting identifiers do not mount firmware"
+rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
+mv "$root/proc/device-tree/chosen/gravity,efi-system-partition" "$root/proc/device-tree/chosen/asahi,efi-system-partition"
+
+reset_helper
 rm "$root/dev/disk/by-partuuid/abcdef01-2222"
 run_helper || fail "a missing chosen ESP does not fail the helper"
 [[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "missing chosen ESP is recorded"

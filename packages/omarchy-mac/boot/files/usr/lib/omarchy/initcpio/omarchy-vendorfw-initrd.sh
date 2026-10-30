@@ -37,12 +37,8 @@ log_missing() {
     exit 0
 }
 
-esp=
-dt=/proc/device-tree/chosen/asahi,efi-system-partition
-if [ -e "$dt" ]; then
-    esp=$(tr -d '\0' <"$dt")
-    [ -n "$esp" ] || log_missing "the booted system has an empty EFI partition identifier; vendor firmware was not staged"
-fi
+esp=$(omarchy_vendorfw_chosen_esp /proc/device-tree/chosen) ||
+    log_missing "the booted system has invalid or conflicting EFI partition identifiers; vendor firmware was not staged"
 
 # The chosen partition is authoritative. If it is slow or missing, never
 # substitute another installed OS's image ESP just because its UUID exists.

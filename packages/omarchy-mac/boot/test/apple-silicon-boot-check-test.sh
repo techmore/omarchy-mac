@@ -714,6 +714,14 @@ run_check
 expect_pass "an ESP named in the device tree and not mounted"
 grep -Eq "^mount -o ro PARTUUID=$partuuid $root/run/omarchy-esp\.[A-Za-z0-9]{6}\$" "$calls" ||
   fail "an unmounted ESP is mounted read-only by its PARTUUID" "$(cat "$calls")"
+mv "$root/proc/device-tree/chosen/asahi,efi-system-partition" "$root/proc/device-tree/chosen/gravity,efi-system-partition"
+run_check
+expect_pass "an ESP named by Gravity's device-tree property"
+printf '11111111-0001\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
+run_check
+expect_fail "conflicting Asahi and Gravity ESP names" "system ESP identifiers disagree"
+rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
+mv "$root/proc/device-tree/chosen/gravity,efi-system-partition" "$root/proc/device-tree/chosen/asahi,efi-system-partition"
 TEST_RO_REFUSED=1 run_check
 expect_fail "an ESP the kernel will not mount read-only" "cannot mount the system ESP (PARTUUID=$partuuid) read-only"
 (( $(grep -c '^mount ' "$calls") == 1 )) || fail "a refused read-only mount is not retried writable" "$(cat "$calls")"

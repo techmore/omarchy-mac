@@ -163,9 +163,11 @@ def main():
         handoff.mkdir()
         shutil.copyfile(stage1, handoff / 'm1n1-stage1.bin')
         (handoff / 'm1n1-stage1-options.conf').write_text(
+            f'chosen.gravity,efi-system-partition={target_esp}\n'
             f'chosen.asahi,efi-system-partition={target_esp}\nchainload={target_esp};m1n1/boot.bin\n')
         (handoff / 'README.txt').write_text(
-            'Unsigned raw stage one and intended settings for the Asahi installer. '
+            'Unsigned raw stage one and intended settings for an M4-capable Gravity-derived installer. '
+            'Gravity stage one uses the gravity ESP property; stage two also supplies the asahi property for Omarchy. '
             'The installer must construct and personalize the Apple boot object; do not install this file directly.\n')
         transition = output / 'transition'
         subprocess.run([sys.executable, str(ROOT / 'scripts/m4-mini-prepare-boot-transition'),

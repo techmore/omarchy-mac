@@ -24,6 +24,7 @@ EXPECTED = {
     'dtb': '734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3',
 }
 KEY = re.compile(r'^(?:chosen\.[A-Za-z0-9,._+\-]+|display|mitigations)$')
+ESP_KEYS = {'chosen.asahi,efi-system-partition', 'chosen.gravity,efi-system-partition'}
 
 
 def digest(path):
@@ -58,12 +59,12 @@ def options(path, partuuid):
         key, value = line.split('=', 1)
         if not KEY.fullmatch(key) or key in seen:
             raise ValueError(f'unknown or duplicate m1n1 option: {key}')
-        if key == 'chosen.asahi,efi-system-partition' and value.lower() != partuuid:
+        if key in ESP_KEYS and value.lower() != partuuid:
             raise ValueError('m1n1 configuration names a different system ESP')
         seen.add(key)
         lines.append(line)
-    if 'chosen.asahi,efi-system-partition' not in seen:
-        raise ValueError('m1n1 configuration must explicitly identify the proposed target ESP')
+    if not ESP_KEYS.issubset(seen):
+        raise ValueError('m1n1 configuration must name the target ESP with both Asahi and Gravity properties')
     return (''.join(line + '\n' for line in lines)).encode('ascii')
 
 
