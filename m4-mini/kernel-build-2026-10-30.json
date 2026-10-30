@@ -1,0 +1,20 @@
+{
+  "scope": "local ARM64 Linux source build only; not installation or hardware qualification",
+  "kernel_commit": "6363990c4a4535b36dccd6c9a972e124861274fa",
+  "environment": "Ubuntu 24.04 ARM64 local QEMU VM, clang 18.1.3, GNU ld, rustc 1.99.0 with rust-src and bindgen 0.71.1",
+  "configuration_sha256": "e2ff7cabcf8f56abfc659d457a4b6bfdd7b2b358e3c7ea700dbbc0f0501a2710",
+  "kernel_release": "7.1.13-omarchy-m4-candidate+",
+  "build_targets": ["Image", "modules", "dtbs"],
+  "build_result": "completed successfully including modpost; 1596 .ko files; resumed incrementally after VM restarts",
+  "source_and_config_checker": "passed after build, including M4 GPU, display, DPTX and 16 KiB page settings",
+  "artifacts_sha256": {
+    "arch/arm64/boot/Image": "450feb4abd85646ce261f4019482d145c18c8479b04417748fdc4901027d72e5",
+    "arch/arm64/boot/dts/apple/t8132-j773g.dtb": "734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3",
+    "drivers/gpu/drm/asahi/asahi_m4.ko": "c69edf37cb9f2828dbe47ecd178de6b91972bac18e56c747f9046abf548ee73f",
+    "drivers/gpu/drm/apple/appledrm.ko": "db9378c3d8e88e3da430b6fb59121fffe885babe2ae2d1ec5129b0a3f4ec298d",
+    "drivers/phy/apple/phy-apple-dptx.ko": "4d24320324e99f56dff794a2f6bf278ddf15041b4188c48ce083b3c738695fb3"
+  },
+  "checks": ["Image identifies as little-endian ARM64 and 16 KiB pages", "three listed modules are AArch64 and report the same kernel release in vermagic", "J773g DTB reports enabled DCP HDMI-A and PHY 4"],
+  "warnings": "Three generated Rust binding steps reported missing rustfmt but continued non-fatally before rustfmt was installed; the build also emitted compiler/device-tree warnings. This is an incremental build, not an independently reproduced clean build.",
+  "limitations": ["Ethernet drivers AQTION and TIGON3 are disabled", "Apple watchdog is modular", "the reconciled R7 scheduler, idle and Bluetooth patch set is not included", "no Arch package, matched Mesa or bootloader bundle", "no native boot, HDMI, GPU or recovery test"]
+}
