@@ -52,10 +52,12 @@ tree, kernel and recovery chain. A persistent mask is not a solution.
 The local Omarchy boot payload now includes pre-transaction guards for the
 two named research packages and for the known m1n1-triggering paths when an M4
 research package is already installed. With the guards already present in the
-disposable root, real pacman refused a simulated fresh install and an upgrade
-of each research package, and refused another package touching an Asahi
-bootloader path. A temporary database also exercised an overlay package
-upgrade and removal with the research kernel recorded as installed. None of
+disposable root, real pacman refused simulated fresh installations, upgrades
+and removals of both research packages, and refused another package touching
+an Asahi bootloader path. Removal is blocked because a safe rollback for an
+active research kernel is not yet established. A temporary database also
+exercised an overlay package upgrade and removal with the research kernel
+recorded as installed. None of
 those blocked transactions reached the recording updater. A baseline fixture
 with no research package and an unrelated `cpio` reinstall passed. The
 fresh-install and temporary-database cases disabled dependency checks to reach

@@ -60,7 +60,11 @@ printf '%s  %s\n' \
 for package in m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz \
   linux-omarchy-m4-research-7.1.13.r7-1-aarch64.pkg.tar.gz; do
   [[ -f $root/tmp/m4-transaction/$package ]] || exit 1
-  for operation in install upgrade; do
+  case $package in
+    m1n1-*) pkgname=m1n1-omarchy-m4-research ;;
+    linux-*) pkgname=linux-omarchy-m4-research ;;
+  esac
+  for operation in install upgrade remove; do
     args=()
     if [[ $operation == install ]]; then
       # An empty disposable database makes pacman treat this as a fresh install.
@@ -68,12 +72,16 @@ for package in m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz \
       args=(--dbpath /tmp/m4-guard-db --nodeps --nodeps --overwrite '*')
     fi
     log="$base/guard-$operation-${package%%-*}.log"
-    if chroot "$root" /usr/bin/pacman "${args[@]}" -U --noconfirm \
-      "/tmp/m4-transaction/$package" >"$log" 2>&1; then
+    if [[ $operation == remove ]]; then
+      args=(--nodeps --nodeps -R --noconfirm "$pkgname")
+    else
+      args+=(-U --noconfirm "/tmp/m4-transaction/$package")
+    fi
+    if chroot "$root" /usr/bin/pacman "${args[@]}" >"$log" 2>&1; then
       echo "guard did not abort $operation of $package" >&2
       exit 1
     fi
-    grep -Fq 'M4 research packages are not qualified for installation or upgrade.' "$log" ||
+    grep -Fq 'M4 research package installation, upgrade and removal are not qualified.' "$log" ||
       { cat "$log" >&2; exit 1; }
   done
 done
@@ -143,6 +151,6 @@ rm -f "$root/usr/lib/asahi-boot/m4-guard-fixture" \
 # An unrelated installed package must still be able to upgrade/reinstall.
 chroot "$root" /usr/bin/pacman -U --noconfirm \
   /var/cache/pacman/pkg/cpio-2.15-3-aarch64.pkg.tar.xz >"$base/guard-unrelated.log" 2>&1
-! grep -Fq 'M4 research packages are not qualified' "$base/guard-unrelated.log"
+! grep -Fq 'M4 research package installation, upgrade and removal are not qualified' "$base/guard-unrelated.log"
 [[ $(sha256sum "$stage2" | cut -d' ' -f1) == "$stage2_hash" ]] || exit 1
-echo 'Research installs and upgrades, and other m1n1 triggers with M4 installed, were blocked; baseline fixture and unrelated cpio reinstall passed.'
+echo 'Research install, upgrade and removal, and other m1n1 triggers with M4 installed, were blocked; baseline fixture and unrelated cpio reinstall passed.'

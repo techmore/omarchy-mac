@@ -3,6 +3,7 @@
 Type = Package
 Operation = Install
 Operation = Upgrade
+Operation = Remove
 Target = linux-omarchy-m4-research
 Target = m1n1-omarchy-m4-research
 

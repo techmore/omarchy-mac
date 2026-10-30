@@ -14,7 +14,7 @@ coexistence_guard="$tmp/staged/usr/lib/omarchy-mac/boot/m4-coexistence-guard"
 if "$guard" >"$tmp/out" 2>&1; then
   fail "the unqualified research transaction is refused"
 fi
-grep -Fq 'not qualified for installation or upgrade' "$tmp/out" || fail "the guard explains the refusal"
+grep -Fq 'installation, upgrade and removal are not qualified' "$tmp/out" || fail "the guard explains the refusal"
 mkdir "$tmp/bin"
 cat >"$tmp/bin/pacman" <<'SH'
 #!/bin/sh
