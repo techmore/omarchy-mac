@@ -1,0 +1,11 @@
+{
+  "scope": "local Arch ARM fixture initramfs rebuild; no M4 hardware boot",
+  "kernel_release": "7.1.13-omarchy-m4-r7-rootfix-ARCH",
+  "kernel_image_sha256": "539438aed106cfc4ce28832fb7430084b16de8b692b4f407b1dacdf25e0ec833",
+  "default_sha256": "9dbfa641f0b0ff908b9273dff229601f9a4287288bc4b336202558263e30e29e",
+  "fallback_sha256": "71e65ddcf8e56cbc403a8b4012a8f0f9863f4f77bc370d570fd015f5259ea559",
+  "change": "The M4 initramfs configuration explicitly includes appledrm, asahi_m4 and phy-apple-dptx in addition to storage drivers. The previous default image did not include these display modules.",
+  "checks": ["real mkinitcpio built default and fallback images", "both images include the M4 display, NVMe and encryption modules", "each image contains the modprobe dependency closure for display, NVMe and encryption drivers", "boot-check fixtures reject an image without the HDMI PHY"],
+  "limitations": ["images use the generic disposable Arch ARM root and are not target-specific", "firmware handoff, early console, HDMI and boot remain untested on M4 hardware"],
+  "hardware_validated": false
+}

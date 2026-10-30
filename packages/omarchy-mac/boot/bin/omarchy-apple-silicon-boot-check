@@ -214,11 +214,11 @@ awk -v prefix="usr/lib/modules/$kver/" '{ sub(/^\.\//, "") } index($0, prefix) =
   "$workdir/initramfs" || fail "/boot/initramfs-$kernel.img does not hold the $kver modules"
 
 if [[ $kernel == "linux-omarchy-m4-research" ]]; then
-  # The M4 mini's internal root and Omarchy's encrypted-root hooks need these
-  # drivers. Accept a built-in, otherwise require each package-owned module
-  # in both images and, for Limine, in both embedded initramfs images.
+  # The M4 mini's internal root, encrypted-root hooks and early HDMI display
+  # need these drivers. Accept a built-in, otherwise require each package-owned
+  # module in both images and, for Limine, in both embedded initramfs images.
   m4_storage_image_check() {
-    local image=$1 listing=$2 required module_path detail depfile
+    local image=$1 listing=$2 required category module_path detail depfile
     module_list_has() {
       awk -v module="$required" '{
         name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
@@ -226,7 +226,9 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
         gsub(/_/, "-", name); if (name == module) found = 1
       } END { exit !found }' "$1"
     }
-    for required in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity; do
+    for required in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity appledrm asahi-m4 phy-apple-dptx; do
+      category=storage
+      case $required in appledrm | asahi-m4 | phy-apple-dptx) category=display ;; esac
       if module_list_has "$workdir/kernel-files"; then
         awk -v prefix="usr/lib/modules/$kver/" -v module="$required" '
           { sub(/^\.\//, ""); if (index($0, prefix) != 1) next;
@@ -234,7 +236,7 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
             sub(/\.ko(\.(gz|xz|zst))?$/, "", name);
             gsub(/_/, "-", name); if (name == module) found = 1 }
           END { exit !found }' "$listing" ||
-          fail "$image is missing required M4 storage module $required"
+          fail "$image is missing required M4 $category module $required"
         # modules.dep describes modular dependencies. Check the full closure,
         # since finding dm-crypt or dm-integrity alone does not establish that
         # their helpers are available in the image. A built-in needs no module
@@ -279,7 +281,7 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
               for (i = 1; i <= n; i++) if (parts[i] != "") queue[++last] = parts[i]
             }
             exit bad ? 1 : 0
-          }' "$depfile") || fail "$image has incomplete M4 storage dependencies for $required: $detail"
+          }' "$depfile") || fail "$image has incomplete M4 $category dependencies for $required: $detail"
       elif [[ ! -r $(path "/usr/lib/modules/$kver/modules.builtin") ]] ||
         ! module_list_has "$(path "/usr/lib/modules/$kver/modules.builtin")"; then
         fail "$kernel has no built-in or package-owned $required driver"

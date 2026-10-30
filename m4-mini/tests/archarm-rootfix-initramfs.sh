@@ -37,7 +37,7 @@ for kind in default fallback; do
     -g "/tmp/m4-rootfix-initramfs/$kind.img" >"$base/rootfix-$kind.log" 2>&1
   ! grep -Eq '^==> ERROR:|^error:' "$base/rootfix-$kind.log" || exit 1
   chroot "$root" /usr/bin/lsinitcpio -l "/tmp/m4-rootfix-initramfs/$kind.img" >"$base/rootfix-$kind.list"
-  for module in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity; do
+  for module in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity appledrm asahi-m4 phy-apple-dptx; do
     pattern=${module//-/[-_]}
     grep -F "usr/lib/modules/$kver/" "$base/rootfix-$kind.list" | \
       grep -Eq "/${pattern}\\.ko(\\.(gz|xz|zst))?$" || {
@@ -54,7 +54,7 @@ for kind in default fallback; do
     grep -Fxq "$path" "$base/rootfix-$kind.list" || { echo "$kind image lacks $path" >&2; exit 1; }
   done
   # Ask kmod for the actual dependency closure and check it against each image.
-  for module in nvme_apple dm_crypt dm_integrity; do
+  for module in nvme_apple dm_crypt dm_integrity appledrm asahi_m4 phy_apple_dptx; do
     deps="$base/rootfix-$kind-$module-deps.log"
     chroot "$root" /usr/bin/modprobe -S "$kver" --show-depends "$module" >"$deps"
     [[ -s $deps ]] || { echo "no dependencies reported for $module" >&2; exit 1; }
