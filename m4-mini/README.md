@@ -35,7 +35,7 @@ The [deeper upstream desktop audit](audits/2026-10-30-upstream-desktop.md) recor
 
 The [desktop applications follow-up](SIGNAL-RELEASE-GOAL.md) tracks the owner’s separate SDK Messages/Signal app and F5 speech workflow for review after M4 bring-up.
 
-The original candidate completed a full local Image, modules and device-tree build; [the build receipt](kernel-build-2026-10-30.json) records hashes, warnings and configuration gaps. This build does not include the reconciled scheduler/idle/Bluetooth work described in the audit and has not been installed or booted.
+The original candidate completed a full local Image, modules and device-tree build; [the build receipt](kernel-build-2026-10-30.json) records hashes, warnings and configuration gaps. It booted a minimal initramfs under generic ARM64 QEMU, without emulating Apple hardware. This build does not include the reconciled scheduler/idle/Bluetooth work described in the audit and has not been installed or booted on the mini.
 
 ## R7 integration candidate
 
@@ -48,6 +48,10 @@ scripts/m4-mini-build --config-only --r7 /path/to/r7-checkout /path/to/new-r7-bu
 ```
 
 Remove `--config-only` and use a different new output directory to attempt the full build. The R7 combination has not completed Image/modules/DTBs, module linking, native boot, HDMI, networking or recovery testing.
+
+## Wi-Fi DMA research
+
+The separate [Broadcom DMA research pull request](https://github.com/techmore/linux-m1pro-touchid/pull/2) carries three upstream fixes together, with the includes adapted to Gravity's source. The modified object compiled in the local ARM64 VM and its DMA selection logic passed a host test; see [the receipt](wifi-dma-research-2026-10-30.json). It changes mapping behavior for other devices as well, and the mini's radio identity and hardware behavior still need verification. It is not part of the R7 build above.
 
 ## Matching Mesa source
 
