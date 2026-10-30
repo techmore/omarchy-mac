@@ -1,14 +1,17 @@
 # Research recipe: private prefix only; no system Mesa replacement or activation.
 pkgname=mesa-omarchy-m4-research
 pkgver=26.3.0.r1
-pkgrel=1
+pkgrel=2
 pkgdesc='Unqualified private Mesa build for M4 mini research'
 arch=('aarch64')
 url='https://github.com/techmore/mesa'
 license=('MIT' 'BSD-3-Clause' 'SGI-B-2.0' 'GPL-3.0-or-later')
+# Pin the shared-library ABIs observed in the Arch ARM research build. A
+# toolchain update with different SONAMEs needs a rebuilt package and recipe.
 depends=('expat' 'glibc' 'libdisplay-info' 'libdrm' 'libelf' 'libgcc' 'libglvnd' 'libpng'
          'libstdc++' 'libunwind' 'libx11' 'libxcb' 'libxext' 'libxml2' 'libxrandr' 'libxshmfence'
-         'libxxf86vm' 'llvm-libs' 'spirv-llvm-translator' 'spirv-tools' 'systemd-libs'
+         'libxxf86vm' 'llvm-libs' 'lm_sensors' 'libLLVM.so=23.1-64'
+         'libdisplay-info.so=3-64' 'libsensors.so=5-64' 'spirv-llvm-translator' 'spirv-tools' 'systemd-libs'
          'python' 'vulkan-icd-loader' 'wayland' 'xcb-util-keysyms' 'zlib' 'zstd')
 makedepends=('bison' 'cbindgen' 'clang' 'cmake' 'flex' 'glslang' 'llvm' 'meson' 'ninja'
              'pkgconf' 'python-mako' 'python-packaging' 'python-ply' 'python-pycparser' 'python-yaml'

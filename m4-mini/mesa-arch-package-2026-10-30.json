@@ -1,0 +1,14 @@
+{
+  "scope": "unsigned private Mesa package built on an isolated Arch Linux ARM staging root; no M4 hardware validation",
+  "package": "mesa-omarchy-m4-research-26.3.0.r1-2-aarch64.pkg.tar.xz",
+  "package_sha256": "2b5af4842e991b179bf0854e9f6973c05cd6a82095dec9261acd92568d385fe2",
+  "pkgbuild_sha256": "b88a233d6118b0529870d877745fcc5936551a2ee66fd922b632f7b61c428fb8",
+  "mesa_commit": "96a24da3f2114aa5a771841a6a0759ecccd9d83e",
+  "source_archive_sha256": "a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778",
+  "kernel_and_mesa_uapi_sha256": "eb9f39e87dfe448dc044f54ab2d11b7493bf1359faca8fb76ece5f3583469015",
+  "build_environment": "aarch64 local VM; Arch Linux ARM overlay on an existing disposable test root; GCC 16.1.1, LLVM 23.1.4, Meson 1.12.1, makepkg 7.1.0",
+  "build_options": ["private /opt/omarchy-m4-mesa-research prefix", "asahi and llvmpipe Gallium drivers", "Asahi Vulkan", "X11 and Wayland", "GLVND", "build-tests=false"],
+  "packaging": "The second package release adds the detected lm_sensors runtime dependency and pins the LLVM 23.1, display-info 3 and sensors 5 library ABIs; the original compiled objects were reused after source checksums were reverified.",
+  "checks": ["makepkg source checksums passed", "Meson and Ninja completed", "makepkg produced an unsigned aarch64 package", "the package BUILDINFO records the prepared PKGBUILD hash", "the Vulkan library is ELF64 AArch64 and the driver manifests reference the private prefix"],
+  "limitations": ["the staging root is not a clean target Omarchy installation", "no target package transaction or UWSM session test", "no M4 GPU, HDMI or recovery test", "the library ABI pins may require rebuilding for a different Arch package set"]
+}
