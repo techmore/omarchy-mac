@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 transition = SourceFileLoader('m4_transition', str(ROOT / 'scripts/m4-mini-prepare-boot-transition')).load_module()
 recovery = runpy.run_path(str(ROOT / 'scripts/m4-mini-recovery-capsule'))
 PARTUUID = '12345678-1234-1234-1234-123456789abc'
+TARGET_PARTUUID = '22345678-1234-1234-1234-123456789abc'
 
 
 def sha(data):
@@ -65,11 +66,11 @@ class TransitionTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             recovery['create'](args)
         self.config = self.root / 'm1n1.conf'
-        self.config.write_text(f'chosen.asahi,efi-system-partition={PARTUUID}\ndisplay=2560x1600\n')
+        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\ndisplay=2560x1600\n')
 
-    def run_transition(self, output):
+    def run_transition(self, output, target=TARGET_PARTUUID):
         argv = ['transition', '--bundle', str(self.bundle), '--capsule', str(self.capsule),
-                '--partuuid', PARTUUID, '--prior-stage2-sha256', self.prior_sha,
+                '--partuuid', PARTUUID, '--target-partuuid', target, '--prior-stage2-sha256', self.prior_sha,
                 '--m1n1-config', str(self.config), '--output', str(output)]
         with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return transition.main()
@@ -81,12 +82,20 @@ class TransitionTest(unittest.TestCase):
         receipt = json.loads((output / 'proposal.json').read_text())
         self.assertFalse(receipt['ready_for_activation'])
         self.assertFalse(receipt['recovery_tested'])
-        self.config.write_text('chosen.asahi,efi-system-partition=22345678-1234-1234-1234-123456789abc\n')
+        self.assertFalse(receipt['stage1_target_pairing_verified'])
+        self.assertEqual(receipt['recovery_esp_partuuid'], PARTUUID)
+        self.assertEqual(receipt['system_esp_partuuid'], TARGET_PARTUUID)
+        self.config.write_text(f'chosen.asahi,efi-system-partition={PARTUUID}\n')
         refused = self.root / 'refused'
         self.assertEqual(self.run_transition(refused), 1)
         self.assertFalse(refused.exists())
-        (self.capsule / 'boot/initramfs').write_bytes(b'corrupted')
+        self.assertEqual(self.run_transition(refused, target=PARTUUID), 1)
+        self.assertFalse(refused.exists())
         self.config.write_text('display=2560x1600\n')
+        self.assertEqual(self.run_transition(refused), 1)
+        self.assertFalse(refused.exists())
+        (self.capsule / 'boot/initramfs').write_bytes(b'corrupted')
+        self.config.write_text(f'chosen.asahi,efi-system-partition={TARGET_PARTUUID}\n')
         self.assertEqual(self.run_transition(refused), 1)
         self.assertFalse(refused.exists())
 

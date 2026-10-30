@@ -62,6 +62,8 @@ def options(path, partuuid):
             raise ValueError('m1n1 configuration names a different system ESP')
         seen.add(key)
         lines.append(line)
+    if 'chosen.asahi,efi-system-partition' not in seen:
+        raise ValueError('m1n1 configuration must explicitly identify the proposed target ESP')
     return (''.join(line + '\n' for line in lines)).encode('ascii')
 
 
@@ -69,7 +71,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--capsule', type=Path, required=True)
-    parser.add_argument('--partuuid', required=True)
+    parser.add_argument('--partuuid', required=True, help='PARTUUID of the captured Gravity recovery ESP')
+    parser.add_argument('--target-partuuid', required=True, help='PARTUUID of the separately provisioned Omarchy system ESP')
     parser.add_argument('--prior-stage2-sha256', required=True)
     parser.add_argument('--m1n1-config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -77,6 +80,9 @@ def main():
     try:
         recovery = runpy.run_path(str(ROOT / 'scripts/m4-mini-recovery-capsule'))
         partuuid, prior_sha = recovery['expected_identity'](args.partuuid, args.prior_stage2_sha256)
+        target_partuuid, _ = recovery['expected_identity'](args.target_partuuid, args.prior_stage2_sha256)
+        if target_partuuid == partuuid:
+            raise ValueError('the proposed Omarchy ESP must differ from the Gravity recovery ESP')
         recovery['verify'](args.capsule, partuuid, prior_sha)
         bundle = args.bundle.resolve(strict=True)
         capsule = args.capsule.resolve(strict=True)
@@ -109,7 +115,7 @@ def main():
         if (sample_bytes[:len(stage2)] != stage2 or sample_bytes[len(stage2):split] != dtb or
                 gzip.decompress(sample_bytes[split:]) != uboot):
             raise ValueError('stage-two sample does not match the packaged loader and J773g tree')
-        config = options(args.m1n1_config, partuuid)
+        config = options(args.m1n1_config, target_partuuid)
         proposed = sample_bytes + config
 
         output.mkdir(mode=0o700)
@@ -121,7 +127,8 @@ def main():
                 stream.write(data)
         receipt = {
             'scope': 'offline target-specific M4 boot proposal; no installation or hardware validation',
-            'board': 'apple,j773g', 'kernel_release': KVER, 'system_esp_partuuid': partuuid,
+            'board': 'apple,j773g', 'kernel_release': KVER, 'recovery_esp_partuuid': partuuid,
+            'system_esp_partuuid': target_partuuid, 'stage1_target_pairing_verified': False,
             'previous_stage2_sha256': prior_sha, 'recovery_capsule': str(capsule),
             'capsule_manifest_sha256': digest(capsule / 'manifest.json'),
             'captured_config_sha256': digest(config_path),
@@ -129,6 +136,7 @@ def main():
             'm1n1_options_sha256': hashlib.sha256(config).hexdigest(),
             'ready_for_activation': False, 'recovery_tested': False,
             'limitations': ['capsule hashes do not authenticate or prove a working recovery',
+                            'a different PARTUUID does not prove a separate Apple boot entry or stage-one pairing',
                             'proposal uses research gzip bytes and may differ from target update-m1n1 output',
                             'no firmware handoff, package transaction, native boot or HDMI validation'],
         }
