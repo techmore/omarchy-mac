@@ -1,0 +1,6 @@
+# Optional research environment for an Omarchy UWSM session.
+# The private fragment checks both explicit opt-in and the J773g device tree.
+if [ "${OMARCHY_M4_MESA_RESEARCH:-0}" = 1 ] &&
+  [ -r /opt/omarchy-m4-mesa-research/share/omarchy-m4/uwsm-env ]; then
+  . /opt/omarchy-m4-mesa-research/share/omarchy-m4/uwsm-env
+fi
