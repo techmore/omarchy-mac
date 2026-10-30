@@ -52,3 +52,7 @@ Remove `--config-only` and use a different new output directory to attempt the f
 ## Matching Mesa source
 
 The [M4 Mesa 6 research branch](https://github.com/techmore/mesa/tree/m4-mini-mesa6-research) carries the existing M-series graphics fixes on Gravity's pinned Mesa source. It retains the eight original upstream commits and their authorship. The eleven reviewed source files match the earlier Mesa 6 recipe, which previously passed an isolated ARM64 build and software tests; see [the Mesa source receipt](mesa-source-lock.json). This is not yet an Arch package or an M4 GPU/HDMI hardware result.
+
+## Bootloader research build
+
+The [Gravity bootloader fork](https://github.com/techmore/bootloader/tree/f02d4a52017915febb222539636b5b025a70407a) is separate from the installed bootloader. `scripts/m4-mini-build-bootloader` builds both stages from a fresh pinned checkout, with `NO_DISPLAY=1`, and cleans its generated build directory before switching stage settings. The earlier wrapper reused the first configuration; the corrected builder caught and avoids that failure. Two local runs produced matching bytes and passed stage-configuration checks; [the receipt](bootloader-build-2026-10-30.json) records the scope. Neither stage has been installed or tested on the M4.
