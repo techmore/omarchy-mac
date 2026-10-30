@@ -214,8 +214,9 @@ awk -v prefix="usr/lib/modules/$kver/" '{ sub(/^\.\//, "") } index($0, prefix) =
   "$workdir/initramfs" || fail "/boot/initramfs-$kernel.img does not hold the $kver modules"
 
 if [[ $kernel == "linux-omarchy-m4-research" ]]; then
-  # The M4 mini's internal root can depend on these drivers. Accept a
-  # built-in, otherwise require each package-owned module in both images.
+  # The M4 mini's internal root and Omarchy's encrypted-root hooks need these
+  # drivers. Accept a built-in, otherwise require each package-owned module
+  # in both images and, for Limine, in both embedded initramfs images.
   m4_storage_image_check() {
     local image=$1 listing=$2 required
     module_list_has() {
@@ -225,7 +226,7 @@ if [[ $kernel == "linux-omarchy-m4-research" ]]; then
         gsub(/_/, "-", name); if (name == module) found = 1
       } END { exit !found }' "$1"
     }
-    for required in nvme-apple nvme-core apple-sart; do
+    for required in nvme-apple nvme-core apple-sart dm-crypt dm-integrity; do
       if module_list_has "$workdir/kernel-files"; then
         awk -v prefix="usr/lib/modules/$kver/" -v module="$required" '
           { sub(/^\.\//, ""); if (index($0, prefix) != 1) next;

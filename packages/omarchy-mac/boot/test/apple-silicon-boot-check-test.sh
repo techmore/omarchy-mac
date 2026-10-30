@@ -343,6 +343,9 @@ system() {
         printf '/usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name"
       done
       printf '/usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver"
+      for name in dm-crypt dm-integrity; do
+        printf '/usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name"
+      done
     fi
   } >"$test_tmp/files/$kernel"
   printf '/usr/lib/asahi-boot/\n%s\n%s\n' "$m1n1_src" "$uboot_src" >"$test_tmp/files/$bootloader"
@@ -352,6 +355,9 @@ system() {
       printf 'usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
     done
     printf 'usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver" >>"$test_tmp/initramfs"
+    for name in dm-crypt dm-integrity; do
+      printf 'usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
+    done
     cp "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
     printf 'fallback initramfs\n' >"$root/boot/initramfs-$kernel-fallback.img"
   fi
@@ -561,6 +567,14 @@ sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 initramfs without the NVMe SART dependency" "missing required M4 storage module apple-sart"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 initramfs without dm-crypt" "missing required M4 storage module dm-crypt"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-integrity\.ko/d' "$test_tmp/files/linux-omarchy-m4-research"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 kernel without dm-integrity" "no built-in or package-owned dm-integrity driver"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
 rm "$root/boot/initramfs-linux-omarchy-m4-research-fallback.img"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 system without a fallback image" "fallback.img cannot be listed"
@@ -569,11 +583,15 @@ sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs-fallback"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 fallback without Apple NVMe" "missing required M4 storage module nvme-apple"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
+sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback without dm-integrity" "missing required M4 storage module dm-integrity"
+system linux-omarchy-m4-research apple/t8132-j773g.dtb
 sed -i "s/$kver/another-release/g" "$test_tmp/initramfs-fallback"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 fallback for a different kernel" "does not hold the $kver modules"
 system linux-omarchy-m4-research apple/t8132-j773g.dtb
-for name in nvme-apple nvme-core apple-sart; do
+for name in nvme-apple nvme-core apple-sart dm-crypt dm-integrity; do
   sed -i "/$name\\.ko/d" "$test_tmp/files/linux-omarchy-m4-research" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
   printf 'kernel/drivers/apple/%s.ko\n' "$name" >>"$modules/modules.builtin"
 done
@@ -982,6 +1000,14 @@ m4_limine_system
 sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs-uki-fallback"
 run_check linux-omarchy-m4-research
 expect_fail "an M4 fallback UKI without SART" "the M4 fallback UKI is missing required M4 storage module apple-sart"
+m4_limine_system
+sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs-uki"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 main UKI without dm-crypt" "the M4 default UKI is missing required M4 storage module dm-crypt"
+m4_limine_system
+sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-uki-fallback"
+run_check linux-omarchy-m4-research
+expect_fail "an M4 fallback UKI without dm-integrity" "the M4 fallback UKI is missing required M4 storage module dm-integrity"
 m4_limine_system
 printf 'corruption\n' >>"$esp/EFI/Linux/omarchy_linux-omarchy-m4-research-fallback.efi"
 run_check linux-omarchy-m4-research
