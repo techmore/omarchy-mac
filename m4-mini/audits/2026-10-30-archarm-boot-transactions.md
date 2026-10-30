@@ -75,8 +75,11 @@ exposed additional failures with the original R7 kernel:
 * `CONFIG_DM_CRYPT` and `CONFIG_DM_INTEGRITY` were disabled, although the
   Omarchy encryption and systemd encryption hooks request those modules.
 * The generic root lacked `cpio` and `btrfs-progs`; the staged hooks require
-  them. `cryptsetup` was also checked. This does not by itself prove a defect
-  in the dependency closure of a complete Omarchy image.
+  them. `cryptsetup` was also checked. The tested payload was copied into the
+  root without installing its package. The inspected [Omarchy boot package
+  recipe](https://github.com/omacom/omarchy-pkgs/blob/a92bcd62d9d9c76de6f005bb03ff487dec569fa0/pkgbuilds/omarchy-mac-boot/PKGBUILD)
+  explicitly declares all three dependencies, so the missing generic-root
+  tools are not evidence of an Omarchy package metadata defect.
 * With the original `mkinitcpio 41-4`, the Asahi hook produced empty-module
   errors in this fixture. After installing signed `mkinitcpio 42.2-1`,
   `cpio 2.15-3` and `btrfs-progs 7.3-1`, the empty-module errors no longer
