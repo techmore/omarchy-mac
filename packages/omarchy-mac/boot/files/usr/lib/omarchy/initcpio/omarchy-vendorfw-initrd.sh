@@ -11,10 +11,19 @@
 set -eu
 
 image_esp_uuid=4F4D-5801
+. /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
 mnt=/run/omarchy-vendorfw-esp
 extract=/run/omarchy-vendorfw-extract
 record=/run/omarchy-vendorfw-initrd.staged
 status=/run/omarchy-vendorfw-initrd.status
+esp_mounted=0
+extract_mounted=0
+
+cleanup() {
+    [ "$esp_mounted" -eq 0 ] || umount "$mnt" 2>/dev/null || true
+    [ "$extract_mounted" -eq 0 ] || umount "$extract" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 if [ -e "$record" ]; then
     exit 0
@@ -32,42 +41,34 @@ esp=
 dt=/proc/device-tree/chosen/asahi,efi-system-partition
 if [ -e "$dt" ]; then
     esp=$(tr -d '\0' <"$dt")
+    [ -n "$esp" ] || log_missing "the booted system has an empty EFI partition identifier; vendor firmware was not staged"
 fi
 
+# The chosen partition is authoritative. If it is slow or missing, never
+# substitute another installed OS's image ESP just because its UUID exists.
 dev=
 i=0
-while [ "$i" -lt 50 ]; do
-    if [ -e "/dev/disk/by-uuid/$image_esp_uuid" ]; then
-        dev="/dev/disk/by-uuid/$image_esp_uuid"
-        break
-    fi
-    if command -v blkid >/dev/null 2>&1; then
-        found=$(blkid -U "$image_esp_uuid" 2>/dev/null || true)
-        if [ -n "$found" ]; then
-            dev=$found
-            break
-        fi
-    fi
-    if [ -n "$esp" ] && [ -e "/dev/disk/by-partuuid/$esp" ]; then
-        dev="/dev/disk/by-partuuid/$esp"
-        break
-    fi
+while [ "$i" -lt 150 ]; do
+    dev=$(omarchy_vendorfw_device /dev/disk "$esp" "$image_esp_uuid" || true)
+    [ -z "$dev" ] || break
     sleep 0.1
     i=$((i + 1))
 done
-[ -n "$dev" ] || log_missing "EFI system partition $image_esp_uuid is not available; vendor firmware was not staged"
+[ -n "$dev" ] || log_missing "EFI system partition ${esp:-$image_esp_uuid} is not available; vendor firmware was not staged"
 
-mkdir -p "$mnt"
-mount -o ro "$dev" "$mnt"
+mkdir -p "$mnt" || log_missing "cannot prepare the EFI mount directory"
+mount -o ro "$dev" "$mnt" || log_missing "cannot mount EFI system partition $dev"
+esp_mounted=1
 if [ ! -f "$mnt/vendorfw/firmware.cpio" ]; then
-    umount "$mnt"
     log_missing "ESP $dev has no vendorfw/firmware.cpio; vendor firmware was not staged"
 fi
 
-mkdir -p "$extract"
-mount -t tmpfs -o mode=0755 omarchy-vendorfw-extract "$extract"
-(cd "$extract" && cpio -i <"$mnt/vendorfw/firmware.cpio")
-umount "$mnt"
+mkdir -p "$extract" || log_missing "cannot prepare the firmware extraction directory"
+mount -t tmpfs -o mode=0755 omarchy-vendorfw-extract "$extract" || log_missing "cannot mount firmware extraction tmpfs"
+extract_mounted=1
+(cd "$extract" && cpio -i <"$mnt/vendorfw/firmware.cpio") || log_missing "cannot extract firmware.cpio from $dev"
+umount "$mnt" || log_missing "cannot unmount EFI system partition $dev"
+esp_mounted=0
 
 src=$extract/vendorfw
 if [ ! -d "$src" ]; then
@@ -77,17 +78,17 @@ fi
 vendor=/lib/firmware/vendor
 if [ -L "$vendor" ]; then
     dest=/vendorfw
-    mkdir -p "$dest"
+    mkdir -p "$dest" || log_missing "cannot prepare $dest"
 elif [ -d "$vendor" ]; then
     dest=$vendor
 else
-    mkdir -p /lib/firmware
+    mkdir -p /lib/firmware || log_missing "cannot prepare /lib/firmware"
     dest=/vendorfw
-    mkdir -p "$dest"
-    ln -s /vendorfw "$vendor"
+    mkdir -p "$dest" || log_missing "cannot prepare $dest"
+    ln -s /vendorfw "$vendor" || log_missing "cannot link $vendor"
 fi
 # Copy into the destination; never mount tmpfs over an existing vendor tree.
-cp -r "$src"/. "$dest"/
+cp -r "$src"/. "$dest"/ || log_missing "cannot copy vendor firmware to $dest"
 
 {
     printf 'dev=%s\n' "$dev"

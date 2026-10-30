@@ -9,6 +9,7 @@ install_hook=$files/etc/initcpio/install/omarchy-vendorfw
 late_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
 late_unit=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service
 early_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
+device_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
 early_unit=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
 cryptsetup_dropin=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-cryptsetup.conf
 
@@ -23,6 +24,7 @@ fail() {
 [[ -f $late_sh ]] || fail "omarchy-vendorfw.sh is in the package files tree"
 [[ -f $late_unit ]] || fail "the post-mount vendorfw unit is in the package files tree"
 [[ -f $early_sh ]] || fail "omarchy-vendorfw-initrd.sh is in the package files tree"
+[[ -f $device_sh ]] || fail "the booted-ESP selector is in the package files tree"
 [[ -f $early_unit ]] || fail "omarchy-vendorfw-initrd.service is in the package files tree"
 [[ -f $cryptsetup_dropin ]] || fail "the systemd-cryptsetup@.service drop-in is in the package files tree"
 [[ ! -e $files/usr/lib/omarchy/initcpio/omarchy-vendorfw-sysroot.service ]] ||
@@ -34,12 +36,10 @@ grep -Fq 'After=sysroot.mount' "$late_unit" ||
   fail "the late unit still waits for sysroot.mount"
 grep -Fq 'Before=cryptsetup-pre.target' "$early_unit" ||
   fail "the early unit is ordered Before=cryptsetup-pre.target"
-grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' "$early_unit" ||
-  fail "the early unit orders After/Wants the image ESP device"
-grep -E '^After=' "$early_unit" | grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' ||
-  fail "the early unit is After the ESP device unit"
-grep -E '^Wants=' "$early_unit" | grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' ||
-  fail "the early unit Wants the ESP device unit"
+! grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' "$early_unit" ||
+  fail "the early unit must not wait for another installation's fixed ESP UUID"
+grep -E '^After=' "$early_unit" | grep -Fq 'systemd-udevd.service' ||
+  fail "the early unit starts after udev"
 grep -Eq '^JobTimeoutSec=' "$early_unit" ||
   fail "the early unit sets JobTimeoutSec so a missing ESP cannot hang forever"
 grep -Fq 'DefaultDependencies=no' "$early_unit" ||
@@ -53,6 +53,8 @@ if grep -Fq 'After=sysroot.mount' "$early_unit"; then
 fi
 grep -Fq 'omarchy-vendorfw-initrd.service' "$install_hook" ||
   fail "the combined hook installs omarchy-vendorfw-initrd.service"
+grep -Fq 'omarchy-vendorfw-device.sh' "$install_hook" ||
+  fail "the combined hook installs the ESP selector"
 grep -Fq 'omarchy-vendorfw.service' "$install_hook" ||
   fail "the combined hook still installs the post-mount unit"
 grep -Fq 'initrd-root-device.target.wants/omarchy-vendorfw-initrd.service' "$install_hook" ||
@@ -268,6 +270,7 @@ modinfo -k "$kver" -F filename dockchannel-hid | grep -q '^/' ||
 
 install -Dm755 "$late_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
 install -Dm755 "$early_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
+install -Dm644 "$device_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
 install -Dm644 "$late_unit" /usr/lib/omarchy/initcpio/omarchy-vendorfw.service
 install -Dm644 "$early_unit" /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
 install -Dm644 "$cryptsetup_dropin" /usr/lib/omarchy/initcpio/omarchy-vendorfw-cryptsetup.conf
@@ -316,6 +319,7 @@ grep -Eq '(^|/)thunderbolt\.ko' "$list" || fail "lsinitcpio lists thunderbolt (d
 grep -Eq '(^|/)thunderbolt[-_]apple\.ko' "$list" || fail "lsinitcpio lists thunderbolt_apple, the Apple Silicon USB4 host router" "$(cat "$list")"
 grep -Fq 'omarchy-vendorfw.sh' "$list" || fail "lsinitcpio lists the late vendorfw script"
 grep -Fq 'omarchy-vendorfw-initrd.sh' "$list" || fail "lsinitcpio lists the early vendorfw helper"
+grep -Fq 'omarchy-vendorfw-device.sh' "$list" || fail "lsinitcpio lists the ESP selector"
 grep -Fq 'omarchy-vendorfw.service' "$list" || fail "lsinitcpio lists the late vendorfw unit"
 grep -Fq 'omarchy-vendorfw-initrd.service' "$list" || fail "lsinitcpio lists the early vendorfw unit"
 grep -Fq 'cryptsetup-pre.target.wants/omarchy-vendorfw-initrd.service' "$list" ||
