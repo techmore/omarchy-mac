@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Copy already-captured boot trees into a local, manually restorable capsule.
+
+This research tool never mounts, writes to, or connects to the target Mac.
+Checksums detect accidental changes; they do not establish that a boot worked.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import sys
+from pathlib import Path, PurePosixPath
+
+GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MANIFEST = "manifest.json"
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def relative(value):
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or any(part in (".", "..") for part in value.split("/")):
+        raise ValueError(f"unsafe relative path: {value!r}")
+    return str(path)
+
+
+def files_under(root):
+    """Return regular files without following links or accepting special files."""
+    found = []
+    for parent, dirs, names in os.walk(root, followlinks=False):
+        for name in dirs + names:
+            path = Path(parent) / name
+            mode = path.lstat().st_mode
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise ValueError(f"links and special files are not accepted: {path}")
+            if stat.S_ISREG(mode):
+                found.append(path.relative_to(root).as_posix())
+    return sorted(found)
+
+
+def expected_identity(partuuid, stage2_sha):
+    partuuid = partuuid.lower()
+    stage2_sha = stage2_sha.lower()
+    if not GUID.fullmatch(partuuid) or not SHA256.fullmatch(stage2_sha):
+        raise ValueError("supply a full GPT PARTUUID and a 64-character stage-two SHA-256")
+    return partuuid, stage2_sha
+
+
+def verify(bundle, partuuid, stage2_sha):
+    partuuid, stage2_sha = expected_identity(partuuid, stage2_sha)
+    if bundle.is_symlink() or not bundle.is_dir() or (bundle / "INCOMPLETE").exists():
+        raise ValueError("capsule is missing, linked or incomplete")
+    files = files_under(bundle)
+    if MANIFEST not in files:
+        raise ValueError("capsule has no manifest")
+    manifest = json.loads((bundle / MANIFEST).read_text())
+    if manifest.get("format") != 1 or manifest.get("partuuid") != partuuid:
+        raise ValueError("capsule format or PARTUUID does not match")
+    if manifest.get("stage2_sha256") != stage2_sha:
+        raise ValueError("capsule stage-two hash does not match the independently supplied hash")
+    inventory = manifest.get("files")
+    if not isinstance(inventory, dict):
+        raise ValueError("invalid capsule inventory")
+    for name, value in inventory.items():
+        if relative(name) != name or not isinstance(value, str) or not SHA256.fullmatch(value):
+            raise ValueError("invalid capsule inventory entry")
+    if set(files) - {MANIFEST} != set(inventory):
+        raise ValueError("capsule files do not match the inventory")
+    required = ["esp/m1n1/boot.bin", "esp/EFI/BOOT/BOOTAA64.EFI",
+                "boot/" + relative(manifest["kernel"]), "boot/" + relative(manifest["initramfs"]),
+                "recovery/m1n1/boot.omarchy-m4-recovery.bin",
+                "recovery/m1n1/boot.omarchy-m4-recovery.sha256"]
+    if any(name not in inventory for name in required):
+        raise ValueError("capsule is missing a required recovery input")
+    if any((bundle / name).stat().st_size == 0 for name in required):
+        raise ValueError("capsule contains an empty required recovery input")
+    for name, expected in inventory.items():
+        if digest(bundle / name) != expected:
+            raise ValueError(f"capsule checksum mismatch: {name}")
+    if inventory[required[0]] != stage2_sha or inventory[required[4]] != stage2_sha:
+        raise ValueError("saved stage two does not match the supplied hash")
+    if (bundle / required[5]).read_text() != stage2_sha + "\n":
+        raise ValueError("saved stage-two hash record does not match")
+    print("Capsule files and supplied identity match; bootability and restoration remain untested.")
+
+
+def create(args):
+    partuuid, stage2_sha = expected_identity(args.partuuid, args.stage2_sha256)
+    if Path(args.esp_snapshot).is_symlink() or Path(args.boot_snapshot).is_symlink():
+        raise ValueError("snapshot roots must not be symlinks")
+    esp = Path(args.esp_snapshot).resolve(strict=True)
+    boot = Path(args.boot_snapshot).resolve(strict=True)
+    if not esp.is_dir() or not boot.is_dir():
+        raise ValueError("both snapshots must be directories")
+    output_arg = Path(args.output)
+    if os.path.lexists(output_arg):
+        raise ValueError("output must not already exist")
+    output = output_arg.parent.resolve(strict=True) / output_arg.name
+    if any(output == source or output in source.parents or source in output.parents for source in (esp, boot)):
+        raise ValueError("output and snapshot trees must be separate")
+    kernel, initramfs = relative(args.kernel), relative(args.initramfs)
+    esp_files, boot_files = files_under(esp), files_under(boot)
+    if not {"m1n1/boot.bin", "EFI/BOOT/BOOTAA64.EFI"}.issubset(esp_files):
+        raise ValueError("ESP snapshot needs stage two and the EFI loader")
+    if kernel not in boot_files or initramfs not in boot_files:
+        raise ValueError("boot snapshot needs the named kernel and initramfs")
+    if any(path.stat().st_size == 0 for path in
+           (esp / "m1n1/boot.bin", esp / "EFI/BOOT/BOOTAA64.EFI", boot / kernel, boot / initramfs)):
+        raise ValueError("required boot inputs must not be empty")
+    if digest(esp / "m1n1/boot.bin") != stage2_sha:
+        raise ValueError("ESP stage two does not match the supplied hash")
+
+    output.mkdir(mode=0o700)
+    (output / "INCOMPLETE").write_text("Do not use this incomplete capsule.\n")
+    for source, names, dirname in ((esp, esp_files, "esp"), (boot, boot_files, "boot")):
+        for name in names:
+            target = output / dirname / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / name, target)
+            if digest(source / name) != digest(target):
+                raise ValueError(f"source changed or copy failed: {name}")
+    saved = output / "recovery/m1n1/boot.omarchy-m4-recovery.bin"
+    saved.parent.mkdir(parents=True)
+    shutil.copyfile(output / "esp/m1n1/boot.bin", saved)
+    (saved.parent / "boot.omarchy-m4-recovery.sha256").write_text(stage2_sha + "\n")
+    inventory = {name: digest(output / name) for name in files_under(output) if name != "INCOMPLETE"}
+    manifest = {"format": 1, "partuuid": partuuid, "stage2_sha256": stage2_sha,
+                "kernel": kernel, "initramfs": initramfs, "files": inventory,
+                "scope": "copied local snapshots; manual recovery only; bootability not established"}
+    (output / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (output / "INCOMPLETE").unlink()
+    try:
+        verify(output, partuuid, stage2_sha)
+    except Exception:
+        (output / "INCOMPLETE").write_text("Do not use this incomplete capsule.\n")
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    create_parser = commands.add_parser("create")
+    create_parser.add_argument("--esp-snapshot", required=True)
+    create_parser.add_argument("--boot-snapshot", required=True)
+    create_parser.add_argument("--kernel", required=True, help="kernel path relative to boot snapshot")
+    create_parser.add_argument("--initramfs", required=True, help="initramfs path relative to boot snapshot")
+    create_parser.add_argument("--output", required=True)
+    check_parser = commands.add_parser("verify")
+    check_parser.add_argument("capsule")
+    for item in (create_parser, check_parser):
+        item.add_argument("--partuuid", required=True)
+        item.add_argument("--stage2-sha256", required=True)
+    args = parser.parse_args()
+    try:
+        if args.command == "create":
+            create(args)
+        else:
+            verify(Path(args.capsule), args.partuuid, args.stage2_sha256)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        print(f"m4-mini-recovery-capsule: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
