@@ -1,0 +1,28 @@
+# Optional UWSM research fragment; never installed into an active env.d path.
+# The session must explicitly opt in and the device tree must identify J773g.
+if [ "${OMARCHY_M4_MESA_RESEARCH:-0}" = 1 ] && [ -r /proc/device-tree/compatible ] &&
+  tr '\000' '\n' </proc/device-tree/compatible | grep -Fxq 'apple,j773g'; then
+  _omarchy_m4_mesa=/opt/omarchy-m4-mesa-research
+  if [ -f "$_omarchy_m4_mesa/lib/libEGL_mesa.so.0" ] &&
+    [ -f "$_omarchy_m4_mesa/lib/libvulkan_asahi.so" ] &&
+    [ -f "$_omarchy_m4_mesa/share/glvnd/egl_vendor.d/50_mesa.json" ] &&
+    [ -f "$_omarchy_m4_mesa/share/vulkan/icd.d/asahi_icd.aarch64.json" ]; then
+    case ":${LD_LIBRARY_PATH:-}:" in
+      *":$_omarchy_m4_mesa/lib:"*) ;;
+      *) LD_LIBRARY_PATH="$_omarchy_m4_mesa/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+    __EGL_VENDOR_LIBRARY_FILENAMES="$_omarchy_m4_mesa/share/glvnd/egl_vendor.d/50_mesa.json"
+    LIBGL_DRIVERS_PATH="$_omarchy_m4_mesa/lib/dri"
+    VK_DRIVER_FILES="$_omarchy_m4_mesa/share/vulkan/icd.d/asahi_icd.aarch64.json"
+    VK_ICD_FILENAMES=$VK_DRIVER_FILES
+    case ",${ASAHI_MESA_DEBUG:-}," in
+      *,nocompress,*) ;;
+      *) ASAHI_MESA_DEBUG="${ASAHI_MESA_DEBUG:+$ASAHI_MESA_DEBUG,}nocompress" ;;
+    esac
+    export LD_LIBRARY_PATH __EGL_VENDOR_LIBRARY_FILENAMES LIBGL_DRIVERS_PATH \
+      VK_DRIVER_FILES VK_ICD_FILENAMES ASAHI_MESA_DEBUG
+  else
+    echo 'M4 Mesa research prefix is incomplete; leaving the session environment unchanged.' >&2
+  fi
+  unset _omarchy_m4_mesa
+fi

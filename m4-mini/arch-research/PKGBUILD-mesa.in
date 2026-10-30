@@ -1,0 +1,36 @@
+# Research recipe: private prefix only; no system Mesa replacement or activation.
+pkgname=mesa-omarchy-m4-research
+pkgver=26.3.0.r1
+pkgrel=1
+pkgdesc='Unqualified private Mesa build for M4 mini research'
+arch=('aarch64')
+url='https://github.com/techmore/mesa'
+license=('MIT' 'BSD-3-Clause' 'SGI-B-2.0' 'GPL-3.0-or-later')
+depends=('expat' 'glibc' 'libdisplay-info' 'libdrm' 'libelf' 'libgcc' 'libglvnd' 'libpng'
+         'libstdc++' 'libunwind' 'libx11' 'libxcb' 'libxext' 'libxml2' 'libxrandr' 'libxshmfence'
+         'libxxf86vm' 'llvm-libs' 'spirv-llvm-translator' 'spirv-tools' 'systemd-libs'
+         'python' 'vulkan-icd-loader' 'wayland' 'xcb-util-keysyms' 'zlib' 'zstd')
+makedepends=('bison' 'cbindgen' 'clang' 'cmake' 'flex' 'glslang' 'llvm' 'meson' 'ninja'
+             'pkgconf' 'python-mako' 'python-packaging' 'python-ply' 'python-pycparser' 'python-yaml'
+             'rust' 'rust-bindgen' 'wayland-protocols' 'xorgproto')
+source=('m4-mesa-source.tar.gz' 'm4-mini-run-mesa' 'm4-mesa-uwsm-env')
+sha256sums=('@SOURCE_SHA256@' '@LAUNCHER_SHA256@' '@UWSM_SHA256@')
+
+build() {
+  meson setup build "$srcdir/techmore-mesa-96a24da" \
+    --prefix=/opt/omarchy-m4-mesa-research --libdir=lib --buildtype=release \
+    -Dplatforms=x11,wayland -Dgallium-drivers=asahi,llvmpipe \
+    -Dvulkan-drivers=asahi -Dllvm=enabled -Dglvnd=enabled -Dbuild-tests=false
+  meson compile -C build
+}
+
+package() {
+  DESTDIR="$pkgdir" meson install -C build --no-rebuild
+  local prefix="$pkgdir/opt/omarchy-m4-mesa-research"
+  install -Dm755 "$srcdir/m4-mini-run-mesa" "$prefix/bin/m4-mini-run-mesa"
+  install -Dm644 "$srcdir/m4-mesa-uwsm-env" "$prefix/share/omarchy-m4/uwsm-env"
+  install -Dm644 "$srcdir/techmore-mesa-96a24da/docs/license.rst" "$pkgdir/usr/share/licenses/$pkgname/MESA"
+  [[ -f $prefix/lib/libvulkan_asahi.so && -f $prefix/lib/libEGL_mesa.so.0 &&
+     -f $prefix/share/glvnd/egl_vendor.d/50_mesa.json &&
+     -f $prefix/share/vulkan/icd.d/asahi_icd.aarch64.json ]] || return 1
+}

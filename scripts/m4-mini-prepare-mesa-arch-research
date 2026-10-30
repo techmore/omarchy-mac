@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Prepare a local, unbuilt private-prefix Mesa research package recipe."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_SHA = 'a223413cb6128c1cef528f05dfe14940da09f88de68497d59dd6560beaf32778'
+LAUNCHER_SHA = '508c8636a0651a2f267a0e009ad9e15f1c7e1ea839b81a7311a96f76d12603b7'
+UWSM_SHA = '26bee13a3f39eb06c37992300f81909cc5529858e9a76e929c9247d65f04be89'
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source_archive', type=Path, help='locked Mesa source archive')
+    parser.add_argument('output', type=Path, help='new local package-preparation directory')
+    args = parser.parse_args()
+    source = args.source_archive
+    launcher = ROOT / 'scripts/m4-mini-run-mesa'
+    uwsm = ROOT / 'm4-mini/arch-research/m4-mesa-uwsm-env'
+    try:
+        if source.is_symlink() or not source.is_file() or digest(source) != SOURCE_SHA:
+            raise ValueError('Mesa source archive is missing, linked or does not match the locked hash')
+        if digest(launcher) != LAUNCHER_SHA:
+            raise ValueError('private Mesa launcher does not match its locked hash')
+        if digest(uwsm) != UWSM_SHA:
+            raise ValueError('UWSM research fragment does not match its locked hash')
+        output = args.output
+        if output.exists() or output.is_symlink():
+            raise ValueError('a new output directory is required')
+        output.mkdir()
+        marker = output / 'INCOMPLETE'
+        marker.write_text('Do not use this incomplete preparation.\n')
+        shutil.copyfile(source, output / 'm4-mesa-source.tar.gz')
+        shutil.copyfile(launcher, output / 'm4-mini-run-mesa')
+        shutil.copyfile(uwsm, output / 'm4-mesa-uwsm-env')
+        if (digest(output / 'm4-mesa-source.tar.gz') != SOURCE_SHA or
+                digest(output / 'm4-mini-run-mesa') != LAUNCHER_SHA or
+                digest(output / 'm4-mesa-uwsm-env') != UWSM_SHA):
+            raise ValueError('copy verification failed')
+        template = (ROOT / 'm4-mini/arch-research/PKGBUILD-mesa.in').read_text()
+        (output / 'PKGBUILD').write_text(template.replace('@SOURCE_SHA256@', SOURCE_SHA)
+                                         .replace('@LAUNCHER_SHA256@', LAUNCHER_SHA)
+                                         .replace('@UWSM_SHA256@', UWSM_SHA))
+        (output / 'DO-NOT-INSTALL.txt').write_text(
+            'RESEARCH ONLY: recipe is unbuilt and unqualified on Arch or M4 hardware.\n')
+        (output / 'receipt.json').write_text(json.dumps({
+            'scope': 'unbuilt private-prefix Arch Mesa recipe',
+            'source_commit': '96a24da3f2114aa5a771841a6a0759ecccd9d83e',
+            'source_archive_sha256': SOURCE_SHA, 'launcher_sha256': LAUNCHER_SHA, 'uwsm_sha256': UWSM_SHA,
+            'hardware_validated': False,
+        }, indent=2) + '\n')
+        marker.unlink()
+    except (OSError, ValueError) as error:
+        print(f'm4-mini-prepare-mesa-arch-research: {error}', file=sys.stderr)
+        return 1
+    print('Prepared an unbuilt private-prefix Mesa research recipe; nothing installed.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
