@@ -8,8 +8,10 @@ conf=$ROOT/files/etc/mkinitcpio.conf.d/95-omarchy-mac-m4-research.conf
 repo=$(cd -- "$ROOT/../../.." && pwd)
 preset=$repo/m4-mini/arch-research/linux-omarchy-m4-research.preset
 kver=7.1.13-omarchy-m4-r7-ARCH
-mkdir -p "$tmp/bin" "$tmp/root/lib/modules/$kver" "$tmp/info"
+rootfix_kver=7.1.13-omarchy-m4-r7-rootfix-ARCH
+mkdir -p "$tmp/bin" "$tmp/root/lib/modules/$kver" "$tmp/root/lib/modules/$rootfix_kver" "$tmp/info"
 printf 'linux-omarchy-m4-research\n' >"$tmp/root/lib/modules/$kver/pkgbase"
+printf 'linux-omarchy-m4-research\n' >"$tmp/root/lib/modules/$rootfix_kver/pkgbase"
 cat >"$tmp/bin/modinfo" <<'SH'
 #!/bin/bash
 [[ $1 == -b && $2 == "$TEST_MODULE_ROOT" && $3 == -k && $4 == "$TEST_KERNEL" && $5 == -F && $6 == filename ]] || exit 2
@@ -22,7 +24,7 @@ printf '(builtin)\n' >"$tmp/info/apple-mailbox"
 printf '(builtin)\n' >"$tmp/info/apple-dart"
 
 run_conf() {
-  PATH="$tmp/bin:$PATH" TEST_MODULE_ROOT="$tmp/root" TEST_KERNEL="$kver" TEST_MODINFO="$tmp/info" \
+  PATH="$tmp/bin:$PATH" TEST_MODULE_ROOT="$tmp/root" TEST_KERNEL="${1:-$kver}" TEST_MODINFO="$tmp/info" \
     KERNELVERSION="${1:-$kver}" bash -c '
       set -u
       _optmoduleroot=$1
@@ -32,6 +34,7 @@ run_conf() {
     ' bash "$tmp/root" "$conf"
 }
 [[ $(run_conf) == "btrfs nvme-apple" ]] || fail "M4 adds Apple NVMe and skips built-in mailbox and DART"
+[[ $(run_conf "$rootfix_kver") == "btrfs nvme-apple" ]] || fail "the distinct encrypted-root release gets the M4 storage modules"
 [[ $(run_conf 6.17.0-aurora1-ARCH) == "btrfs" ]] || fail "other kernels are not changed"
 rm "$tmp/info/nvme-apple"
 if run_conf >/dev/null 2>&1; then fail "missing M4 NVMe is refused"; fi

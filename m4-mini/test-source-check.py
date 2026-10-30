@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 from importlib.machinery import SourceFileLoader
 import pathlib
 import subprocess
@@ -57,6 +58,21 @@ class SourceCheck(unittest.TestCase):
             config.write_text(good.replace('CONFIG_ARM64_16K_PAGES=y', 'CONFIG_ARM64_4K_PAGES=y'))
             with self.assertRaises(ValueError):
                 checker.check_config(config)
+
+    def test_rootfix_lock_requires_encryption_modules(self):
+        lock = json.loads((HERE / 'source-lock-r7-rootfix.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / 'config'
+            base = ('CONFIG_ARCH_APPLE=y\nCONFIG_ARM64_16K_PAGES=y\nCONFIG_RUST=y\n'
+                    'CONFIG_DRM_APPLE=m\nCONFIG_DRM_ASAHI_M4=m\nCONFIG_PHY_APPLE_DPTX=m\n')
+            required = lock['required_config']
+            complete = base + ''.join(f'{key}={values[-1]}\n' for key, values in required.items())
+            config.write_text(complete)
+            checker.check_config(config, required)
+            for key in ('CONFIG_DM_CRYPT', 'CONFIG_DM_INTEGRITY'):
+                config.write_text(complete.replace(f'{key}={required[key][-1]}\n', ''))
+                with self.assertRaisesRegex(ValueError, key):
+                    checker.check_config(config, required)
 
 
 if __name__ == '__main__':

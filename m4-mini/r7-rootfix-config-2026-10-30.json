@@ -1,0 +1,17 @@
+{
+  "scope": "local ARM64 VM config-only research; no package installation or hardware validation",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "release": "7.1.13-omarchy-m4-r7-rootfix-ARCH",
+  "command": "scripts/m4-mini-build --config-only --r7 --arch-research --rootfix <clean-locked-checkout> <new-build-directory> 3",
+  "config_sha256": "b45421f50feb6a6114d0f1bb694ccc6fbb1763780e9a715291ae1cc584d949fa",
+  "resolved_options": {
+    "CONFIG_BLK_DEV_DM": "m",
+    "CONFIG_DM_CRYPT": "m",
+    "CONFIG_DM_INTEGRITY": "m",
+    "CONFIG_BTRFS_FS": "m",
+    "CONFIG_OVERLAY_FS": "m"
+  },
+  "source_and_required_config_check": "passed",
+  "hardware_validated": false,
+  "limitations": "Configuration resolution does not build or install a kernel, validate initramfs archives, or prove Apple boot, HDMI or recovery."
+}

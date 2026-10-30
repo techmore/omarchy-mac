@@ -3,23 +3,26 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--config-only] [--r7] [--arch-research] CLEAN_KERNEL_CHECKOUT NEW_BUILD_DIRECTORY [JOBS]" >&2
+  echo "Usage: $0 [--config-only] [--r7] [--arch-research] [--rootfix] CLEAN_KERNEL_CHECKOUT NEW_BUILD_DIRECTORY [JOBS]" >&2
   exit 2
 }
 config_only=0
 r7=0
 arch_research=0
+rootfix=0
 while [[ ${1:-} == --* ]]; do
   case "$1" in
     --config-only) config_only=1 ;;
     --r7) r7=1 ;;
     --arch-research) arch_research=1 ;;
+    --rootfix) rootfix=1 ;;
     *) usage ;;
   esac
   shift
 done
 [[ $# -ge 2 && $# -le 3 ]] || usage
 (( ! arch_research || r7 )) || { echo '--arch-research requires --r7' >&2; exit 2; }
+(( ! rootfix || (r7 && arch_research) )) || { echo '--rootfix requires --r7 and --arch-research' >&2; exit 2; }
 source_dir=$(realpath "$1")
 output_dir=$2
 jobs=${3:-3}
@@ -38,6 +41,13 @@ if (( arch_research )); then
   # Omarchy's Apple boot tooling discovers DTBs under releases ending -ARCH.
   # This naming contract alone does not make the result an installable package.
   localversion=-omarchy-m4-r7-ARCH
+fi
+if (( rootfix )); then
+  # Keep the earlier build distinct while adding the encrypted-root support
+  # Omarchy's sd-encrypt and first-boot initramfs hooks require.
+  lock="$repo_dir/m4-mini/source-lock-r7-rootfix.json"
+  localversion=-omarchy-m4-r7-rootfix-ARCH
+  fragments+=("$repo_dir/m4-mini/config/omarchy-root.config")
 fi
 python3 "$script_dir/m4-mini-source-check" "$source_dir" --lock "$lock"
 command -v rustfmt >/dev/null
