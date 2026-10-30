@@ -9,6 +9,7 @@ stage=$(realpath "$1")
 output=$(realpath -m -- "$2")
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 template="$script_dir/../m4-mini/arch-research/PKGBUILD.in"
+preset="$script_dir/../m4-mini/arch-research/linux-omarchy-m4-research.preset"
 [[ ! -e $output && ! -L $output ]] || { echo 'New output directory required' >&2; exit 1; }
 case "$output/" in "$stage/"*) echo 'Output must be outside the staging tree' >&2; exit 1;; esac
 (( $(id -u) != 0 )) || { echo 'Run makepkg as an unprivileged user' >&2; exit 1; }
@@ -57,7 +58,9 @@ touch "$output/INCOMPLETE"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$stage" \
   -czf "$output/m4-r7-arch-stage.tar.gz" usr
 stage_sha=$(sha256sum "$output/m4-r7-arch-stage.tar.gz" | cut -d' ' -f1)
-sed "s/@STAGE_SHA256@/$stage_sha/" "$template" > "$output/PKGBUILD"
+cp -- "$preset" "$output/linux-omarchy-m4-research.preset"
+preset_sha=$(sha256sum "$output/linux-omarchy-m4-research.preset" | cut -d' ' -f1)
+sed -e "s/@STAGE_SHA256@/$stage_sha/" -e "s/@PRESET_SHA256@/$preset_sha/" "$template" > "$output/PKGBUILD"
 printf '%s\n' 'RESEARCH ONLY: do not install; no M4 boot, display, recovery or Arch environment qualification.' > "$output/DO-NOT-INSTALL.txt"
 # The package tools may run in a non-Arch VM: -d skips dependency resolution,
 # not source checksums. It does not validate runtime package dependencies.

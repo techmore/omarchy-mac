@@ -12,10 +12,10 @@ printf '%s\n' "$PACKAGES"
 SH
 chmod +x "$tmp/pacman"
 export PATH="$tmp:$PATH"
-for kernel in linux-asahi linux-aurora; do
+for kernel in linux-asahi linux-aurora linux-omarchy-m4-research; do
   [[ $(PACKAGES="$kernel" "$ROOT/bin/omarchy-mac-kernel") == "$kernel" ]] || fail "installed $kernel is selected"
 done
-for packages in '' linux $'linux-asahi\nlinux-aurora'; do
+for packages in '' linux $'linux-asahi\nlinux-aurora' $'linux-aurora\nlinux-omarchy-m4-research'; do
   if PACKAGES="$packages" "$ROOT/bin/omarchy-mac-kernel"; then fail "missing or ambiguous kernel is refused"; fi
 done
 if QUERY_FAIL=1 PACKAGES=linux-asahi "$ROOT/bin/omarchy-mac-kernel"; then fail "package query failure is refused"; fi

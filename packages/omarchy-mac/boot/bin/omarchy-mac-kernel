@@ -11,7 +11,7 @@ packages=$(pacman -Qq) || {
   echo "Cannot read the installed kernel packages" >&2
   exit 1
 }
-mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora)$/')
+mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora|omarchy-m4-research)$/')
 if (( ${#kernels[@]} == 1 )); then
   printf '%s\n' "${kernels[0]}"
 else

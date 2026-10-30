@@ -7,6 +7,7 @@ Target = etc/mkinitcpio.conf.d/91-omarchy-mac-encrypt.conf
 Target = etc/mkinitcpio.conf.d/92-omarchy-mac-hid.conf
 Target = etc/mkinitcpio.conf.d/93-omarchy-mac-plymouth.conf
 Target = etc/mkinitcpio.conf.d/94-omarchy-mac-vconsole.conf
+Target = etc/mkinitcpio.conf.d/95-omarchy-mac-m4-research.conf
 Target = etc/initcpio/install/*
 Target = usr/lib/initcpio/install/*
 Target = usr/lib/omarchy/initcpio/*

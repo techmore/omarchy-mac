@@ -1,0 +1,42 @@
+{
+  "scope": "local research-only boot, initramfs and recovery integration; no target-system connection or installation",
+  "kernel_release": "7.1.13-omarchy-m4-r7-ARCH",
+  "kernel_commit": "f46fde727002de82666741306b4e7c322fe3f0d9",
+  "packages": [
+    {
+      "name": "linux-omarchy-m4-research-7.1.13.r7-1-aarch64.pkg.tar.gz",
+      "sha256": "9d485130c9446873b1d413bd947b8607be4da9a2d4226c6ecfcc4b4a33696122",
+      "checks": "1614 staged usr files and the two-image mkinitcpio preset match byte for byte; no package install script"
+    },
+    {
+      "name": "m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz",
+      "sha256": "368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3",
+      "checks": "exactly two private stage-two and U-Boot payload files, matching their source bytes; no package install script"
+    }
+  ],
+  "packaging_environment": "Ubuntu 26.04 ARM64 VM with makepkg and an empty pacman database; dependency resolution skipped, no package installation",
+  "local_tests": [
+    "boot-check fixtures cover J773g identity, private package-owned loader files, DTB and GRUB/Limine menu selection",
+    "fixtures reject missing or incorrect default and fallback storage modules, including embedded UKI initramfs images; built-in and compressed module names pass",
+    "fixtures reject a missing or corrupt saved stage two, a missing or corrupt fallback UKI, and a changed fallback command line",
+    "Limine fixtures reject a different default entry, remembered selection or an entry ahead of Omarchy, preserve an existing GRUB recovery entry and EFI file, and roll back on a missing fallback UKI",
+    "vendor firmware selector fixtures prefer the booted ESP PARTUUID and refuse to substitute the image UUID when that partition is missing",
+    "a disposable chroot ran the actual early firmware helper with fake mount and device fixtures: chosen ESP selection, missing partition, mount failure and corrupt archive paths passed",
+    "offline recovery capsule fixtures check copying, independent identity, integrity, missing files, symlinks and path traversal",
+    "official mkinitcpio 42.2.7.g68ebfd2 generated minimal default and -S autodetect fallback test archives using the staged kernel and M4 drop-in; lsinitcpio listed nvme-apple, nvme-core and apple-sart in both, and a missing-driver build was rejected before image output"
+  ],
+  "mkinitcpio_test_scope": "Ubuntu 24.04 ARM64 VM; private build from upstream commit 68ebfd2688eb356468232d5495e35b1463927b5d; test-only no-op hook plus autodetect, not the production hook set or a bootable image; Ubuntu kmod tools exposed in private PATH",
+  "mkinitcpio_test_image_sha256": "22dc6b219fc8e32826c9c70817aa2410d97a58b81624fe344007ceec9d1a2f8a",
+  "limitations": [
+    "fixture checks are not a native boot or a working recovery test; the firmware chroot uses fake device nodes and mount commands",
+    "no snapshot of the mini or verified prior boot chain has been captured",
+    "no Arch dependency, package upgrade or actual M4 hardware test",
+    "the ordinary kernel selector refuses a system with both known-good and research kernels installed",
+    "the Limine checker does not inspect one-shot EFI variables; the M4 check refuses GRUB because it does not interpret default or saved selections",
+    "initramfs driver checks confirm file presence rather than comparing module bytes to the package",
+    "stage-two backup alone does not restore the EFI loader, menu, kernel, initramfs, filesystem or firmware",
+    "no Apple HDMI, GPU, networking or Bluetooth qualification"
+  ],
+  "hardware_validated": false,
+  "release_ready": false
+}
