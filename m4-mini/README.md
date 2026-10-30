@@ -81,6 +81,8 @@ The [M4 Mesa 6 research branch](https://github.com/techmore/mesa/tree/m4-mini-me
 
 `scripts/m4-mini-assemble-omarchy-research` gathers the corrected kernel package, private loader package, an Omarchy Mac boot source snapshot, the Mesa recipe and a sample stage-two image into one offline bundle. It checks that the packaged J773g tree and loader bytes match the sample. The sample has no target-specific configuration, and the bundle is not an installer or a safe recovery mechanism.
 
+On a Linux staging host, `scripts/m4-mini-stage-omarchy-overlay` can unpack that locked bundle's kernel and loader together with the Omarchy boot payload into a new, checksummed image overlay. [The local overlay receipt](omarchy-overlay-2026-10-30.json) identifies the assembled artifact. It does not create a package database, run pacman hooks, provide Mesa binaries or make an image bootable, and must not be applied to an installed system.
+
 ## Bootloader research build
 
 The [Gravity bootloader fork](https://github.com/techmore/bootloader/tree/f02d4a52017915febb222539636b5b025a70407a) is separate from the installed bootloader. `scripts/m4-mini-build-bootloader` builds both stages from a fresh pinned checkout, with `NO_DISPLAY=1`, and cleans its generated build directory before switching stage settings. The earlier wrapper reused the first configuration; the corrected builder caught and avoids that failure. Two local runs produced matching bytes and passed stage-configuration checks; [the receipt](bootloader-build-2026-10-30.json) records the scope. Neither stage has been installed or tested on the M4.

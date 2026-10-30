@@ -1,0 +1,9 @@
+{
+  "scope": "uninstalled offline Omarchy M4 image overlay, not a bootable image or installer",
+  "kernel_release": "7.1.13-omarchy-m4-r7-rootfix-ARCH",
+  "omarchy_boot_source_commit": "b8ce4c47ddbf5f8d6b4e5305e899d0105b58a30a",
+  "archive_sha256": "380a6f609f39c96782dae95df9ddcc79f1dd6ef0343d5ff9042a306a12a87b0e",
+  "contents": ["corrected research kernel and J773g DTB", "private m1n1 and U-Boot files", "Omarchy Mac boot payload and transaction guards", "per-file checksum and symlink inventory"],
+  "limits": ["no target-specific ESP configuration", "no installed package database or pacman hooks executed", "no Mesa binaries", "no qualified recovery, native M4 boot or HDMI"],
+  "hardware_validated": false
+}

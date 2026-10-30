@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Build a local image overlay for review. Never mount, install or activate it.
+set -euo pipefail
+if (( $# != 2 )); then
+  echo "Usage: $0 LOCKED_RESEARCH_BUNDLE NEW_OVERLAY_DIRECTORY" >&2
+  exit 2
+fi
+bundle=$(realpath -e "$1")
+output=$(realpath -m -- "$2")
+[[ -d $bundle && ! -e $output && ! -L $output ]] || { echo 'A bundle and a new output directory are required' >&2; exit 1; }
+case "$output/" in "$bundle/"*) echo 'Output must be outside the bundle' >&2; exit 1;; esac
+kernel="$bundle/kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz"
+loader="$bundle/bootloader/m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz"
+boot_source="$bundle/omarchy-mac-boot-source.tar.gz"
+for file in "$kernel" "$loader" "$boot_source"; do
+  [[ -f $file && ! -L $file ]] || { echo "Missing or linked input: $file" >&2; exit 1; }
+done
+printf '%s  %s\n' \
+  cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d "$kernel" \
+  368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3 "$loader" \
+  62d22df6e8b2fcf691146ab8e851d585951c842585d0f4cfcd193ebed2f84bed "$boot_source" | sha256sum -c --status
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+tar -xzf "$boot_source" -C "$tmp"
+boot_install="$tmp/packages/omarchy-mac/boot/install"
+[[ -x $boot_install ]] || { echo 'The locked Omarchy boot installer is missing' >&2; exit 1; }
+mkdir -- "$output"
+touch "$output/INCOMPLETE"
+# Both package archives are hash-pinned, contain no links, and are unpacked as
+# files only: pacman scriptlets and hooks are never executed by this tool.
+tar -xzf "$kernel" -C "$output" --exclude='.PKGINFO' --exclude='.BUILDINFO' --exclude='.MTREE'
+tar -xzf "$loader" -C "$output" --exclude='.PKGINFO' --exclude='.BUILDINFO' --exclude='.MTREE'
+"$boot_install" "$output"
+modules="$output/usr/lib/modules/7.1.13-omarchy-m4-r7-rootfix-ARCH"
+[[ $(cat "$modules/pkgbase") == linux-omarchy-m4-research &&
+  -s $modules/vmlinuz && -s $modules/dtbs/apple/t8132-j773g.dtb &&
+  -s $output/usr/lib/asahi-boot/omarchy-m4-research/m1n1.bin &&
+  -x $output/usr/lib/omarchy-mac/boot/m4-research-transaction-guard &&
+  -x $output/usr/lib/omarchy-mac/boot/m4-coexistence-guard ]] || {
+  echo 'Integrated overlay is missing a required component' >&2
+  exit 1
+}
+python3 - "$output" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+files = {}
+for parent, dirs, names in os.walk(root, followlinks=False):
+    for name in dirs + names:
+        path = Path(parent) / name
+        relative = path.relative_to(root).as_posix()
+        if relative == 'INCOMPLETE':
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            files[relative] = {'symlink': os.readlink(path)}
+        elif stat.S_ISREG(info.st_mode):
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            files[relative] = {'sha256': digest.hexdigest(), 'mode': oct(stat.S_IMODE(info.st_mode))}
+        elif not stat.S_ISDIR(info.st_mode):
+            raise SystemExit('special file in overlay: ' + relative)
+receipt = {'scope': 'uninstalled offline Omarchy M4 image overlay, not a bootable image',
+           'kernel_release': '7.1.13-omarchy-m4-r7-rootfix-ARCH',
+           'omarchy_boot_source_commit': 'b8ce4c47ddbf5f8d6b4e5305e899d0105b58a30a',
+           'hardware_validated': False, 'files': files,
+           'limitations': ['not an installer or package transaction', 'no target-specific ESP or recovery',
+                           'no Mesa binaries', 'no native boot or HDMI qualification']}
+(root / 'overlay-receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+PY
+rm -- "$output/INCOMPLETE"
+echo 'Integrated M4 kernel, loader and Omarchy boot payload staged locally; nothing installed.'
