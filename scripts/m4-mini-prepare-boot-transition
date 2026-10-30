@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Prepare an offline M4 stage-two proposal tied to a verified recovery capsule.
+
+This writes only a new local output directory. It does not mount an ESP,
+modify a boot device, install packages, or claim that recovery works.
+"""
+import argparse
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+KVER = '7.1.13-omarchy-m4-r7-rootfix-ARCH'
+EXPECTED = {
+    'kernel': 'cc9fa5c49ea79e96f12bb05ac01084a5810b19f56fe8e4a93b9bc41d80ac7b0d',
+    'loader': '368409870fe34921b7e4ba667f5af619616428195f286bf648b750e15c5f80c3',
+    'boot': 'c04c1c67633775a2831fa551ed61e047f8f854e58621e5079fed7cd877ce9a16',
+    'dtb': '734a8c22d441f3f00fc510289af273542dba9e59da06ab623b0816aa7950a1b3',
+}
+KEY = re.compile(r'^(?:chosen\.[A-Za-z0-9,._+\-]+|display|mitigations)$')
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            result.update(chunk)
+    return result.hexdigest()
+
+
+def member(archive, name):
+    entries = [entry for entry in archive.getmembers() if entry.name == name and entry.isfile()]
+    if len(entries) != 1:
+        raise ValueError(f'package does not contain exactly one regular {name}')
+    with archive.extractfile(entries[0]) as stream:
+        return stream.read()
+
+
+def options(path, partuuid):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('captured m1n1 configuration must be a regular file')
+    text = path.read_text(encoding='ascii')
+    if '\r' in text or any(ord(c) < 32 and c not in '\n\t' for c in text):
+        raise ValueError('unsupported control character in m1n1 configuration')
+    lines, seen = [], set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if any(ord(c) < 32 or ord(c) > 126 or c == '\\' for c in line) or '=' not in line:
+            raise ValueError('unsupported m1n1 configuration line')
+        key, value = line.split('=', 1)
+        if not KEY.fullmatch(key) or key in seen:
+            raise ValueError(f'unknown or duplicate m1n1 option: {key}')
+        if key == 'chosen.asahi,efi-system-partition' and value.lower() != partuuid:
+            raise ValueError('m1n1 configuration names a different system ESP')
+        seen.add(key)
+        lines.append(line)
+    return (''.join(line + '\n' for line in lines)).encode('ascii')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--bundle', type=Path, required=True)
+    parser.add_argument('--capsule', type=Path, required=True)
+    parser.add_argument('--partuuid', required=True)
+    parser.add_argument('--prior-stage2-sha256', required=True)
+    parser.add_argument('--m1n1-config', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        recovery = runpy.run_path(str(ROOT / 'scripts/m4-mini-recovery-capsule'))
+        partuuid, prior_sha = recovery['expected_identity'](args.partuuid, args.prior_stage2_sha256)
+        recovery['verify'](args.capsule, partuuid, prior_sha)
+        bundle = args.bundle.resolve(strict=True)
+        capsule = args.capsule.resolve(strict=True)
+        config_path = args.m1n1_config.resolve(strict=True)
+        if args.bundle.is_symlink() or args.capsule.is_symlink() or args.m1n1_config.is_symlink():
+            raise ValueError('bundle, capsule and configuration must not be symlinks')
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('a new output directory is required')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        for protected in (bundle, capsule):
+            if output == protected or output in protected.parents or protected in output.parents:
+                raise ValueError('output must be separate from the bundle and recovery capsule')
+        if config_path == output or output in config_path.parents:
+            raise ValueError('output must not contain the captured configuration')
+
+        kernel = bundle / 'kernel/linux-omarchy-m4-research-7.1.13.r7.rootfix-1-aarch64.pkg.tar.gz'
+        loader = bundle / 'bootloader/m1n1-omarchy-m4-research-1.6.1.r1-1-aarch64.pkg.tar.gz'
+        sample = bundle / 'bootloader/boot-sample.bin'
+        for name, path in (('kernel', kernel), ('loader', loader), ('boot', sample)):
+            if path.is_symlink() or not path.is_file() or digest(path) != EXPECTED[name]:
+                raise ValueError(f'{name} does not match the locked M4 research artifact')
+        with tarfile.open(kernel, 'r:*') as kernel_archive, tarfile.open(loader, 'r:*') as loader_archive:
+            dtb = member(kernel_archive, f'usr/lib/modules/{KVER}/dtbs/apple/t8132-j773g.dtb')
+            stage2 = member(loader_archive, 'usr/lib/asahi-boot/omarchy-m4-research/m1n1.bin')
+            uboot = member(loader_archive, 'usr/lib/asahi-boot/omarchy-m4-research/u-boot-nodtb.bin')
+        if hashlib.sha256(dtb).hexdigest() != EXPECTED['dtb']:
+            raise ValueError('the package does not contain the locked J773g device tree')
+        sample_bytes = sample.read_bytes()
+        split = len(stage2) + len(dtb)
+        if (sample_bytes[:len(stage2)] != stage2 or sample_bytes[len(stage2):split] != dtb or
+                gzip.decompress(sample_bytes[split:]) != uboot):
+            raise ValueError('stage-two sample does not match the packaged loader and J773g tree')
+        config = options(args.m1n1_config, partuuid)
+        proposed = sample_bytes + config
+
+        output.mkdir(mode=0o700)
+        marker = output / 'INCOMPLETE'
+        marker.write_text('Do not use this incomplete proposal.\n')
+        for name, data in (('stage2-proposal.bin', proposed), ('m1n1-options.conf', config)):
+            fd = os.open(output / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(data)
+        receipt = {
+            'scope': 'offline target-specific M4 boot proposal; no installation or hardware validation',
+            'board': 'apple,j773g', 'kernel_release': KVER, 'system_esp_partuuid': partuuid,
+            'previous_stage2_sha256': prior_sha, 'recovery_capsule': str(capsule),
+            'capsule_manifest_sha256': digest(capsule / 'manifest.json'),
+            'captured_config_sha256': digest(config_path),
+            'stage2_proposal_sha256': hashlib.sha256(proposed).hexdigest(),
+            'm1n1_options_sha256': hashlib.sha256(config).hexdigest(),
+            'ready_for_activation': False, 'recovery_tested': False,
+            'limitations': ['capsule hashes do not authenticate or prove a working recovery',
+                            'proposal uses research gzip bytes and may differ from target update-m1n1 output',
+                            'no firmware handoff, package transaction, native boot or HDMI validation'],
+        }
+        (output / 'proposal.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+        (output / 'DO-NOT-INSTALL.txt').write_text(
+            'Research proposal only. Do not write this file to an ESP or use it as a recovery procedure.\n')
+        marker.unlink()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, tarfile.TarError, EOFError) as error:
+        print(f'm4-mini-prepare-boot-transition: {error}', file=sys.stderr)
+        return 1
+    print('Prepared an offline M4 boot proposal tied to the recovery capsule; nothing installed.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
