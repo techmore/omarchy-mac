@@ -1,0 +1,6 @@
+# WIP5 M4 mini draft. Build independent default and fallback initramfs images.
+ALL_kver="/boot/vmlinuz-linux-omarchy-m4-wip5"
+PRESETS=('default' 'fallback')
+default_image="/boot/initramfs-linux-omarchy-m4-wip5.img"
+fallback_image="/boot/initramfs-linux-omarchy-m4-wip5-fallback.img"
+fallback_options="-S autodetect"

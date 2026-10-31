@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Apply the Aurora WIP5 M4 boot draft to the pinned Omarchy source tree."""
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import shutil
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+COMMIT = '061be4d6acb810ab8b1bd74699e3e8e4e97b4bfa'
+PATCH = ROOT / 'm4-mini/patches/omarchy-mac-boot-061be4d-m4-wip5.patch'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--checkout', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.checkout.is_symlink() or not args.checkout.is_dir():
+            raise ValueError('source checkout must be an unlinked directory')
+        checkout = args.checkout.resolve(strict=True)
+        head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+        if head != COMMIT:
+            raise ValueError('source checkout is not at the pinned Omarchy Mac boot commit')
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('output must be a new directory')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        if output == checkout or output in checkout.parents or checkout in output.parents:
+            raise ValueError('output must be separate from the source checkout')
+        archive = subprocess.check_output(['git', '-C', str(checkout), 'archive', '--format=tar', COMMIT, 'omarchy-mac-boot'])
+        output.mkdir(mode=0o700)
+        (output / 'INCOMPLETE').write_text('Incomplete M4 boot source; do not use.\n')
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+            links = []
+            for member in source:
+                path = PurePosixPath(member.name)
+                if (path.is_absolute() or not path.parts or path.parts[0] != 'omarchy-mac-boot'
+                        or any(part in ('.', '..') for part in path.parts)):
+                    raise ValueError('unsafe path in pinned source archive')
+                destination = output.joinpath(*path.parts)
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with source.extractfile(member) as src, destination.open('xb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    destination.chmod(member.mode & 0o777)
+                elif member.issym():
+                    links.append((destination, member.linkname))
+                else:
+                    raise ValueError('unsupported entry in pinned source archive')
+            # Create links last, so no archive member can write through one.
+            for destination, link in links:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(link, destination)
+        target = output / 'omarchy-mac-boot'
+        subprocess.run(['git', '-C', str(target), 'apply', '--check', str(PATCH)], check=True)
+        subprocess.run(['git', '-C', str(target), 'apply', str(PATCH)], check=True)
+        (output / 'receipt.json').write_text(json.dumps({
+            'upstream_commit': COMMIT, 'profile': 'aurora-wip5',
+            'patch_sha256': hashlib.sha256(PATCH.read_bytes()).hexdigest(),
+            'hardware_validated': False,
+            'limitations': ['research source only', 'no M4 boot, HDMI or recovery validation'],
+        }, indent=2) + '\n')
+        (output / 'INCOMPLETE').unlink()
+    except (OSError, ValueError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-prepare-upstream-boot: {error}', file=sys.stderr)
+        return 1
+    print('Prepared the local Aurora WIP5 adaptation of the pinned Omarchy boot source.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

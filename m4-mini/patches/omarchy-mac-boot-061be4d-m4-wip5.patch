@@ -1,0 +1,2304 @@
+diff --git a/bin/omarchy-apple-silicon-boot-check b/bin/omarchy-apple-silicon-boot-check
+index 44895087611bdd14ca191984318949e643663a13..1b523c500e3383657ed9f8fe7b1c9129b6d6a565 100755
+--- a/bin/omarchy-apple-silicon-boot-check
++++ b/bin/omarchy-apple-silicon-boot-check
+@@ -1,7 +1,7 @@
+ #!/bin/bash
+ 
+ # omarchy:summary=Check that the boot files match the installed Apple Silicon kernel and m1n1
+-# omarchy:args=[--boot-chain] [linux-aurora|linux-asahi]
++# omarchy:args=[--boot-chain] [linux-aurora|linux-asahi|linux-omarchy-m4-wip5]
+ # omarchy:hidden=true
+ # omarchy:requires-sudo=true
+ 
+@@ -25,7 +25,8 @@
+ set -euo pipefail
+ 
+ root=${OMARCHY_BOOT_CHECK_ROOT:-}
+-declare -A bootloaders=([linux-aurora]="m1n1-aurora aura" [linux-asahi]=m1n1)
++declare -A bootloaders=([linux-aurora]="m1n1-aurora aura" [linux-asahi]=m1n1
++  [linux-omarchy-m4-wip5]=m1n1-omarchy-m4-wip5)
+ 
+ fail() {
+   echo "Apple Silicon boot check: $*" >&2
+@@ -38,7 +39,7 @@ path() {
+ 
+ case "${1:-}" in
+   -h | --help)
+-    echo "Usage: omarchy-apple-silicon-boot-check [--boot-chain] [linux-aurora|linux-asahi]"
++    echo "Usage: omarchy-apple-silicon-boot-check [--boot-chain] [linux-aurora|linux-asahi|linux-omarchy-m4-wip5]"
+     exit 0
+     ;;
+ esac
+@@ -77,26 +78,27 @@ limine_esp_path() {
+ # The kernel the boot menu starts: the first kernel entry in Limine's menu,
+ # where the tool writes the Omarchy block first and Omarchy's default_entry
+ # points, else GRUB's first entry. A default_entry or GRUB_DEFAULT pointed
+-# elsewhere is not followed.
++# elsewhere is not followed for older kernels; M4 additionally checks the
++# narrow supported Limine default layout below.
+ menu_kernel() {
+   if [[ -e $(path /var/lib/omarchy/limine.enabled) && -f $(path /etc/default/limine) ]]; then
+-    sudo awk '{ sub(/^[[:space:]]+/, "") } /^\/\/linux-(aurora|asahi)$/ { print substr($0, 3); exit }' \
++    sudo awk '{ sub(/^[[:space:]]+/, "") } /^\/\/linux-[[:alnum:]_-]+$/ { print substr($0, 3); exit }' \
+       "$(path "$(limine_esp_path)/limine.conf")" 2>/dev/null
+   else
+-    sudo grep -Eo 'vmlinuz-linux-(aurora|asahi)' "$(path /boot/grub/grub.cfg)" 2>/dev/null | sed -n '1s/^vmlinuz-//p'
++    sudo grep -Eo 'vmlinuz-linux-[[:alnum:]_-]+' "$(path /boot/grub/grub.cfg)" 2>/dev/null | sed -n '1s/^vmlinuz-//p'
+   fi
+ }
+ 
+ kernel=${1:-}
+ if [[ -z $kernel ]]; then
+   kernels=()
+-  for candidate in linux-aurora linux-asahi; do
++  for candidate in linux-aurora linux-asahi linux-omarchy-m4-wip5; do
+     ! is_installed "$candidate" || kernels+=("$candidate")
+   done
+-  if (( boot_chain && ${#kernels[@]} == 2 )); then
++  if (( boot_chain && ${#kernels[@]} > 1 )); then
+     kernel=$(menu_kernel || true)
+     [[ -n $kernel ]] ||
+-      fail "cannot tell which kernel boots: linux-aurora and linux-asahi are installed, and the boot menu starts neither"
++      fail "cannot tell which kernel boots: ${kernels[*]} are installed, and the boot menu starts none of them"
+   else
+     (( ${#kernels[@]} == 1 )) ||
+       fail "cannot tell which kernel boots: ${kernels[*]:-neither linux-aurora nor linux-asahi} installed"
+@@ -104,7 +106,7 @@ if [[ -z $kernel ]]; then
+   fi
+ fi
+ [[ -n ${bootloaders[$kernel]:-} ]] ||
+-  fail "$kernel is not a kernel this check knows; it checks linux-aurora with m1n1-aurora or aura and linux-asahi with m1n1"
++  fail "$kernel is not a kernel this check knows; it checks linux-aurora, linux-asahi and linux-omarchy-m4-wip5 with their matching loaders"
+ read -ra supported_bootloaders <<<"${bootloaders[$kernel]}"
+ bootloader_description=${bootloaders[$kernel]// / or }
+ is_installed "$kernel" || fail "$kernel boots with $bootloader_description, but $kernel is not installed"
+@@ -124,6 +126,14 @@ fi
+ bootloader=${installed_bootloaders[0]}
+ rivals=(linux-aurora m1n1-aurora aura linux-asahi m1n1)
+ (( ! boot_chain )) || rivals=()
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  # Research files have private names so the known-good kernel and loader can
++  # remain installed. The active bundle is still verified below.
++  rivals=()
++  compatible=$(path /proc/device-tree/compatible)
++  [[ -r $compatible ]] && tr '\0' '\n' <"$compatible" | grep -Fxq 'apple,j773g' ||
++    fail "linux-omarchy-m4-wip5 requires the M4 Mac mini (apple,j773g)"
++fi
+ for package in "${rivals[@]}"; do
+   [[ $package == "$kernel" || $package == "$bootloader" ]] || ! is_installed "$package" ||
+     fail "$kernel boots with $bootloader, but $package is installed too"
+@@ -217,6 +227,97 @@ sudo lsinitcpio -l "$(path "/boot/initramfs-$kernel.img")" >"$workdir/initramfs"
+ awk -v prefix="usr/lib/modules/$kver/" '{ sub(/^\.\//, "") } index($0, prefix) == 1 { found = 1 } END { exit !found }' \
+   "$workdir/initramfs" || fail "/boot/initramfs-$kernel.img does not hold the $kver modules"
+ 
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  # The stock WIP5 asahi module has no G16 backend. Require the resolved,
++  # package-owned kernel config before considering it an M4 graphics input.
++  m4_config="/usr/lib/modules/$kver/config"
++  grep -Fxq -- "$m4_config" "$workdir/kernel-files" ||
++    fail "the M4 kernel does not own its resolved build config"
++  sudo grep -Fxq 'CONFIG_DRM_ASAHI_G16=y' "$(path "$m4_config")" ||
++    fail "the M4 kernel config does not enable the G16 backend"
++  # The M4 mini's internal root, encrypted-root hooks and early HDMI display
++  # need these drivers. Accept a built-in, otherwise require each package-owned
++  # module in both images and, for Limine, in both embedded initramfs images.
++  m4_storage_image_check() {
++    local image=$1 listing=$2 required category module_path detail depfile
++    module_list_has() {
++      awk -v module="$required" '{
++        name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
++        sub(/\.ko(\.(gz|xz|zst))?$/, "", name);
++        gsub(/_/, "-", name); if (name == module) found = 1
++      } END { exit !found }' "$1"
++    }
++    for required in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity btrfs appledrm asahi phy-apple-dptx; do
++      category=storage
++      case $required in appledrm | asahi | phy-apple-dptx) category=display ;; esac
++      if module_list_has "$workdir/kernel-files"; then
++        awk -v prefix="usr/lib/modules/$kver/" -v module="$required" '
++          { sub(/^\.\//, ""); if (index($0, prefix) != 1) next;
++            name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
++            sub(/\.ko(\.(gz|xz|zst))?$/, "", name);
++            gsub(/_/, "-", name); if (name == module) found = 1 }
++          END { exit !found }' "$listing" ||
++          fail "$image is missing required M4 $category module $required"
++        # modules.dep describes modular dependencies. Check the full closure,
++        # since finding dm-crypt or dm-integrity alone does not establish that
++        # their helpers are available in the image. A built-in needs no module
++        # dependency traversal.
++        module_path=$(awk -v prefix="/usr/lib/modules/$kver/" -v module="$required" '
++          index($0, prefix) == 1 {
++            name = $0; sub(/^.*\//, "", name); if (name !~ /\.ko(\.(gz|xz|zst))?$/) next;
++            sub(/\.ko(\.(gz|xz|zst))?$/, "", name); gsub(/_/, "-", name);
++            if (name == module) { print substr($0, length(prefix) + 1); count++ }
++          } END { exit count != 1 }' "$workdir/kernel-files") ||
++          fail "$kernel does not own exactly one $required module for $kver"
++        depfile=$(path "/usr/lib/modules/$kver/modules.dep")
++        [[ -r $depfile ]] || fail "$kernel has no readable modules.dep for $kver"
++        detail=$(awk -v root_module="$module_path" -v prefix="usr/lib/modules/$kver/" \
++          -v package_files="$workdir/kernel-files" -v image_files="$listing" '
++          function norm(p) { sub(/\.(gz|xz|zst)$/, "", p); return p }
++          BEGIN {
++            while ((getline line < package_files) > 0) {
++              sub(/^\//, "", line);
++              if (index(line, prefix) == 1) owned[norm(substr(line, length(prefix) + 1))] = 1
++            }
++            close(package_files)
++            while ((getline line < image_files) > 0) {
++              sub(/^\.\//, "", line);
++              if (index(line, prefix) == 1) present[norm(substr(line, length(prefix) + 1))] = 1
++            }
++            close(image_files)
++          }
++          {
++            key = $1; if (key !~ /:$/) next; sub(/:$/, "", key); key = norm(key);
++            known[key] = 1;
++            for (i = 2; i <= NF; i++) dependencies[key] = dependencies[key] " " norm($i)
++          }
++          END {
++            queue[1] = norm(root_module); last = 1;
++            for (pos = 1; pos <= last; pos++) {
++              key = queue[pos]; if (seen[key]++) continue;
++              if (!(key in known)) { print "no modules.dep entry for " key; bad = 1; continue }
++              if (!(key in owned)) { print "not owned by the kernel package: " key; bad = 1 }
++              if (!(key in present)) { print "missing from image: " key; bad = 1 }
++              n = split(dependencies[key], parts, /[[:space:]]+/);
++              for (i = 1; i <= n; i++) if (parts[i] != "") queue[++last] = parts[i]
++            }
++            exit bad ? 1 : 0
++          }' "$depfile") || fail "$image has incomplete M4 $category dependencies for $required: $detail"
++      elif [[ ! -r $(path "/usr/lib/modules/$kver/modules.builtin") ]] ||
++        ! module_list_has "$(path "/usr/lib/modules/$kver/modules.builtin")"; then
++        fail "$kernel has no built-in or package-owned $required driver"
++      fi
++    done
++  }
++  m4_storage_image_check "/boot/initramfs-$kernel.img" "$workdir/initramfs"
++  fallback="/boot/initramfs-$kernel-fallback.img"
++  sudo lsinitcpio -l "$(path "$fallback")" >"$workdir/m4-fallback" 2>/dev/null ||
++    fail "$fallback cannot be listed"
++  awk -v prefix="usr/lib/modules/$kver/" '{ sub(/^\.\//, "") } index($0, prefix) == 1 { found = 1 } END { exit !found }' \
++    "$workdir/m4-fallback" || fail "$fallback does not hold the $kver modules"
++  m4_storage_image_check "$fallback" "$workdir/m4-fallback"
++fi
++
+ # A Limine Mac (install/hardware/apple/limine-boot.sh) boots the UKI from
+ # Limine's menu and GRUB is not part of its boot; a GRUB Mac boots grub.cfg.
+ limine_mac=0
+@@ -225,6 +326,9 @@ grub_cfg=$(path /boot/grub/grub.cfg)
+ if (( ! limine_mac )); then
+   sudo grep -Fq "vmlinuz-$kernel" "$grub_cfg" && sudo grep -Fq "initramfs-$kernel.img" "$grub_cfg" ||
+     fail "/boot/grub/grub.cfg does not boot vmlinuz-$kernel with initramfs-$kernel.img"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    [[ $(menu_kernel || true) == "$kernel" ]] || fail "the first GRUB kernel reference is not $kernel"
++  fi
+ fi
+ 
+ # Encrypted Apple Silicon roots (GRUB + sd-encrypt). A mapper or crypto_LUKS
+@@ -408,6 +512,10 @@ if (( limine_mac )); then
+   limine_efi=$(path /usr/share/limine/BOOTAA64.EFI)
+   sudo test -f "$limine_uki" || fail "$limine_esp/EFI/Linux/omarchy_$kernel.efi (the Limine UKI) is missing"
+   sudo test -f "$limine_cfg" || fail "$limine_esp/limine.conf is missing on a Limine Mac"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    sudo omarchy-mac-m4-limine-menu-check "$limine_cfg" "$kernel" ||
++      fail "the M4 Limine default does not select the research kernel in the supported menu layout"
++  fi
+   # The menu starts its first kernel entry. Another kernel there, such as
+   # linux-aurora-wip put ahead by a BOOT_ORDER edit, would boot instead of the
+   # one checked here.
+@@ -444,8 +552,52 @@ if (( limine_mac )); then
+     (( $(sudo stat -c %s "$uki_kernel") >= kernel_size )) && sudo cmp -s -n "$kernel_size" "$(path "${images[0]}")" "$uki_kernel" ||
+       fail "$limine_esp/EFI/Linux/omarchy_$kernel.efi does not carry the installed $kver kernel"
+   else
++    [[ $kernel != "linux-omarchy-m4-wip5" ]] || fail "objcopy is required to verify the M4 UKI"
+     echo "Apple Silicon boot check: objcopy (binutils) is not installed; not checking the kernel inside the UKI" >&2
+   fi
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    # Limine boots the embedded initramfs, not the separate /boot image.
++    # Inspect both UKIs and require the fallback entry to select its own bytes.
++    fallback_uki=$(path "$limine_esp/EFI/Linux/omarchy_$kernel-fallback.efi")
++    sudo test -s "$fallback_uki" || fail "the M4 fallback UKI is missing"
++    fallback_path=$(sudo awk -v entry="//$kernel-fallback" '
++      { line = $0; sub(/^[[:space:]]+/, "", line) }
++      line == entry { inside = 1; next }
++      inside && line ~ /^\// { exit }
++      inside && line ~ /^path:[[:space:]]/ { sub(/^path:[[:space:]]*/, "", line); print line; exit }
++    ' "$limine_cfg")
++    [[ $fallback_path == "boot():/EFI/Linux/omarchy_$kernel-fallback.efi#"* ]] ||
++      fail "the M4 fallback entry does not name a hash-verified fallback UKI"
++    [[ $(sudo b2sum "$fallback_uki" | cut -d' ' -f1) == "${fallback_path##*#}" ]] ||
++      fail "the M4 fallback UKI does not match its menu hash"
++    fallback_cmdline=$(sudo awk -v entry="//$kernel-fallback" '
++      { line = $0; sub(/^[[:space:]]+/, "", line) }
++      line == entry { inside = 1; next }
++      inside && line ~ /^\// { exit }
++      inside && line ~ /^cmdline:[[:space:]]/ { sub(/^cmdline:[[:space:]]*/, "", line); print line; exit }
++    ' "$limine_cfg")
++    [[ -n $fallback_cmdline && $fallback_cmdline == "$limine_cmdline" ]] ||
++      fail "the M4 fallback entry does not carry the checked kernel command line"
++    sudo objcopy -O binary --only-section=.linux "$fallback_uki" "$workdir/m4-fallback-linux" 2>/dev/null ||
++      fail "the M4 fallback UKI has no kernel section"
++    (( $(sudo stat -c %s "$workdir/m4-fallback-linux") >= kernel_size )) &&
++      sudo cmp -s -n "$kernel_size" "$(path "${images[0]}")" "$workdir/m4-fallback-linux" ||
++      fail "the M4 fallback UKI does not carry the installed $kver kernel"
++    for uki_type in default fallback; do
++      if [[ $uki_type == default ]]; then
++        uki=$limine_uki
++        embedded="$workdir/m4-uki.img"
++      else
++        uki=$fallback_uki
++        embedded="$workdir/m4-uki-fallback.img"
++      fi
++      sudo objcopy -O binary --only-section=.initrd "$uki" "$embedded" 2>/dev/null && sudo test -s "$embedded" ||
++        fail "the M4 $uki_type UKI has no readable initramfs section"
++      sudo lsinitcpio -l "$embedded" >"$workdir/m4-$uki_type-uki-list" 2>/dev/null ||
++        fail "the M4 $uki_type UKI initramfs cannot be listed"
++      m4_storage_image_check "the M4 $uki_type UKI" "$workdir/m4-$uki_type-uki-list"
++    done
++  fi
+   limine_root=$(grep -Eo 'root=[^[:space:]]+' <<<"$limine_cmdline" | tail -n 1 || true)
+   [[ $limine_root == root=UUID=* ]] || fail "the Limine $kernel entry does not set root=UUID="
+   # The root filesystem as omarchy-mac-limine-cmdline reads it: fstab's row,
+@@ -619,6 +771,9 @@ if [[ -e $config_file ]]; then
+     esac
+   done <"$workdir/config"
+ fi
++if [[ $kernel == "linux-omarchy-m4-wip5" && -n $disabled ]]; then
++  fail "M1N1_UPDATE_DISABLED prevents verifying the M4 research boot chain"
++fi
+ # dtb-overlays.sh leaves a DTBS the administrator set alone, overlays and all.
+ config_dtbs=$DTBS
+ # update-m1n1 applies overlays only where its configuration calls for them,
+@@ -685,6 +840,14 @@ m1n1_file=$(realpath -e "$root$M1N1")
+ root_real=$(realpath -m "${root:-/}")
+ [[ $root_real == / ]] || m1n1_file=${m1n1_file#"$root_real"}
+ grep -Fxq -- "$m1n1_file" "$workdir/bootloader-files" || fail "M1N1 $M1N1 is not owned by $bootloader"
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  [[ $M1N1 == "/usr/lib/asahi-boot/omarchy-m4-wip5/m1n1.bin" &&
++     $U_BOOT == "/usr/lib/asahi-boot/omarchy-m4-wip5/u-boot-nodtb.bin" ]] ||
++    fail "the M4 research kernel requires its private m1n1 and U-Boot paths"
++  uboot_file=$(realpath -e "$root$U_BOOT")
++  [[ $root_real == / ]] || uboot_file=${uboot_file#"$root_real"}
++  grep -Fxq -- "$uboot_file" "$workdir/bootloader-files" || fail "U_BOOT $U_BOOT is not owned by $bootloader"
++fi
+ 
+ # Split and globbed the way update-m1n1's unquoted $DTBS is, in the C collation
+ # /etc/default/update-m1n1 pins.
+@@ -707,6 +870,12 @@ for dtb in "${dtbs[@]}"; do
+   [[ $owned == /usr/lib/modules/$kver/* ]] || fail "device tree $dtb is not one of $kernel $kver's"
+   grep -Fxq -- "$owned" "$workdir/kernel-files" || fail "device tree $dtb is not owned by $kernel"
+ done
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  m4_dtb=$(realpath -e "$root/usr/lib/modules/$kver/dtbs/apple/t8132-j773g.dtb") ||
++    fail "$kernel is missing the J773g device tree"
++  (( ${#dtbs[@]} == 1 )) && [[ $(realpath -e "$root${dtbs[0]}") == "$m4_dtb" ]] ||
++    fail "the M4 research bundle must use exactly its J773g device tree"
++fi
+ 
+ # The file each device tree is read from: the kernel's, or the copy that
+ # carries the package-owned overlays update-m1n1 applies to it.
+@@ -817,7 +986,21 @@ bind_read_only() {
+ 
+ esp_uuid=""
+ esp_node=$(path /proc/device-tree/chosen/asahi,efi-system-partition)
+-[[ ! -r $esp_node ]] || esp_uuid=$(tr -d '\0' <"$esp_node")
++gravity_node=$(path /proc/device-tree/chosen/gravity,efi-system-partition)
++gravity_uuid=""
++if [[ -e $esp_node ]]; then
++  [[ -r $esp_node ]] || fail "cannot read the Asahi system ESP identifier"
++  esp_uuid=$(tr -d '\0' <"$esp_node" | tr '[:upper:]' '[:lower:]')
++  [[ -n $esp_uuid ]] || fail "the Asahi system ESP identifier is empty"
++fi
++if [[ -e $gravity_node ]]; then
++  [[ -r $gravity_node ]] || fail "cannot read the Gravity system ESP identifier"
++  gravity_uuid=$(tr -d '\0' <"$gravity_node" | tr '[:upper:]' '[:lower:]')
++  [[ -n $gravity_uuid ]] || fail "the Gravity system ESP identifier is empty"
++fi
++[[ -z $esp_uuid || -z $gravity_uuid || $esp_uuid == "$gravity_uuid" ]] ||
++  fail "the Asahi and Gravity system ESP identifiers disagree"
++esp_uuid=${esp_uuid:-$gravity_uuid}
+ if [[ -e $(path /boot/efi/.builder) || -e $(path /boot/.builder) || -z $esp_uuid ]]; then
+   if [[ -e $(path /boot/efi/m1n1) ]]; then
+     esp=/boot/efi
+@@ -839,14 +1022,40 @@ else
+ fi
+ 
+ sudo test -f "$mountpoint/m1n1/boot.bin" || fail "the system ESP ($esp) has no m1n1/boot.bin"
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  # Stage 1 uses one fixed boot.bin: the separately saved prior stage 2 is a
++  # manual recovery input, not an automatic Limine fallback.
++  recovery="$mountpoint/m1n1/boot.omarchy-m4-recovery.bin"
++  recovery_hash="$mountpoint/m1n1/boot.omarchy-m4-recovery.sha256"
++  sudo test -s "$recovery" && sudo test -f "$recovery_hash" &&
++    ! sudo test -L "$recovery" && ! sudo test -L "$recovery_hash" ||
++    fail "the M4 research chain has no saved prior stage 2 and SHA-256 record on the system ESP"
++  expected_recovery=$(sudo cat "$recovery_hash")
++  [[ $expected_recovery =~ ^[0-9a-f]{64}$ ]] || fail "the M4 recovery SHA-256 record is invalid"
++  [[ $(sudo sha256sum "$recovery" | cut -d' ' -f1) == "$expected_recovery" ]] ||
++    fail "the M4 recovery stage 2 does not match its SHA-256 record"
++  ! sudo cmp -s "$recovery" "$mountpoint/m1n1/boot.bin" ||
++    fail "the M4 recovery stage 2 is identical to the current research chain"
++fi
+ # U-Boot starts the loader on the system ESP, so the Limine, menu and UKI
+ # checked above must be the ones there.
+ if (( limine_mac )); then
+-  for file in EFI/BOOT/BOOTAA64.EFI limine.conf "EFI/Linux/omarchy_$kernel.efi"; do
+-    sudo cmp -s "$(path "$limine_esp/$file")" "$mountpoint/$file" ||
++  limine_files=(EFI/BOOT/BOOTAA64.EFI limine.conf "EFI/Linux/omarchy_$kernel.efi")
++  [[ $kernel != "linux-omarchy-m4-wip5" ]] || limine_files+=("EFI/Linux/omarchy_$kernel-fallback.efi")
++  for file in "${limine_files[@]}"; do
++    if ! sudo cmp -s "$(path "$limine_esp/$file")" "$mountpoint/$file"; then
++      if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++        fail "$limine_esp/$file is not the one on the system ESP ($esp); the M4 boot chain is not verified"
++      fi
+       fail "$limine_esp/$file is not the one on the system ESP ($esp), which U-Boot boots; point ESP_PATH in /etc/default/limine at that ESP's mountpoint, then run sudo omarchy-mac-boot-update and omarchy update"
++    fi
+   done
+ fi
++if [[ $kernel == "linux-omarchy-m4-wip5" ]] && (( ! limine_mac )); then
++  # A first textual kernel reference does not establish GRUB's saved or
++  # dynamically selected default. Do not report a verified M4 GRUB boot.
++  fail "M4 GRUB default selection is not verified"
++fi
+ report_running_release() {
+   if (( pending_reboot )); then
+     echo "Apple Silicon boot check: installed $kernel $kver boot files match; running $running_kver, reboot pending"
+@@ -868,6 +1077,14 @@ fi
+ # them and compare again.
+ sudo cat "$mountpoint/m1n1/boot.bin" >"$workdir/esp-boot.bin" ||
+   fail "cannot read m1n1/boot.bin on the system ESP ($esp)"
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  m1n1_options >"$workdir/m4-options"
++  checker="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/omarchy-mac-m4-stage2-check"
++  if "$checker" "$workdir/esp-boot.bin" "$root$M1N1" "${dtb_file[${dtbs[0]}]}" "$root$U_BOOT" "$workdir/m4-options"; then
++    report_running_release
++    exit 0
++  fi
++fi
+ if esp_order=$(dtb_order "$workdir/esp-boot.bin" "$(stat -L -c %s "$root$M1N1")") && [[ -n $esp_order ]]; then
+   mapfile -t esp_dtbs <<<"$esp_order"
+   build_image "$workdir/boot-esp-order.bin" "${esp_dtbs[@]}"
+@@ -876,4 +1093,7 @@ if esp_order=$(dtb_order "$workdir/esp-boot.bin" "$(stat -L -c %s "$root$M1N1")"
+     exit 0
+   fi
+ fi
++if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++  fail "m1n1/boot.bin on the system ESP ($esp) does not match the M4 research chain; a coordinated update and recovery path is not yet verified"
++fi
+ fail "m1n1/boot.bin on the system ESP ($esp) is not m1n1, $kernel $kver's device trees, U-Boot and $CONFIG as installed; run sudo update-m1n1, then omarchy update"
+diff --git a/bin/omarchy-mac-esp b/bin/omarchy-mac-esp
+index aea867ffbdadc0de251c580bdbae73b6f266ba8a..f3eaa14afe2ebb6d8f08b0019a70b16c02d3f6d3 100755
+--- a/bin/omarchy-mac-esp
++++ b/bin/omarchy-mac-esp
+@@ -6,19 +6,34 @@
+ # Limine, its menu and the UKI live on the ESP that U-Boot boots from. Omarchy
+ # mounts it at /boot/efi; installs from before that, and Asahi's own images,
+ # mount it at /boot, where the kernels share the filesystem with it. The ESP is
+-# the partition the device tree names (asahi,efi-system-partition, as
+-# asahi-scripts' mount_sys_esp reads it) mounted whole at /boot/efi, else at
+-# /boot; without that name, the FAT filesystem mounted whole at /boot/efi, else
+-# at /boot. Exits 1, printing nothing, when there is none.
++# the partition named by the Asahi or Gravity device-tree property, mounted
++# whole at /boot/efi or /boot. Without either name, use the FAT filesystem
++# mounted whole at /boot/efi or /boot. Conflicting names fail closed.
+ 
+ set -uo pipefail
+ 
+ # Tests may name another device-tree node; root always reads the live one.
+ esp_node=/proc/device-tree/chosen/asahi,efi-system-partition
+-(( EUID == 0 )) || esp_node=${OMARCHY_ESP_PARTUUID_FILE:-$esp_node}
++gravity_node=/proc/device-tree/chosen/gravity,efi-system-partition
++if (( EUID != 0 )); then
++  esp_node=${OMARCHY_ESP_PARTUUID_FILE:-$esp_node}
++  gravity_node=${OMARCHY_ESP_GRAVITY_PARTUUID_FILE:-$gravity_node}
++fi
+ 
+-esp_uuid=""
+-[[ ! -r $esp_node ]] || esp_uuid=$(tr -d '\0' <"$esp_node" | tr '[:upper:]' '[:lower:]')
++esp_uuid="" gravity_uuid=""
++for node in "$esp_node" "$gravity_node"; do
++  if [[ -e $node ]]; then
++    [[ -r $node ]] || { echo "omarchy-mac-esp: cannot read the system ESP identifier" >&2; exit 1; }
++    value=$(tr -d '\0' <"$node" | tr '[:upper:]' '[:lower:]')
++    [[ -n $value ]] || { echo "omarchy-mac-esp: empty system ESP identifier" >&2; exit 1; }
++    if [[ $node == "$esp_node" ]]; then esp_uuid=$value; else gravity_uuid=$value; fi
++  fi
++done
++if [[ -n $esp_uuid && -n $gravity_uuid && $esp_uuid != "$gravity_uuid" ]]; then
++  echo "omarchy-mac-esp: Asahi and Gravity system ESP identifiers disagree" >&2
++  exit 1
++fi
++esp_uuid=${esp_uuid:-$gravity_uuid}
+ 
+ for candidate in /boot/efi /boot; do
+   findmnt -n -r -o FSTYPE,FSROOT,PARTUUID --mountpoint "$candidate" 2>/dev/null |
+diff --git a/bin/omarchy-mac-initramfs-hooks b/bin/omarchy-mac-initramfs-hooks
+index 7f7571223ea72564d486f0a8631acc881979057d..fc4b331be5e7e44a9706ffb07da2de7fb31d1070 100755
+--- a/bin/omarchy-mac-initramfs-hooks
++++ b/bin/omarchy-mac-initramfs-hooks
+@@ -17,7 +17,18 @@ set -euo pipefail
+ conf=${OMARCHY_MKINITCPIO_CONF:-/etc/mkinitcpio.conf}
+ conf_dir=${OMARCHY_MKINITCPIO_CONF_DIR:-$conf.d}
+ preset_dir=${OMARCHY_MKINITCPIO_PRESET_DIR:-/etc/mkinitcpio.d}
+-kernel=${OMARCHY_MKINITCPIO_KERNEL:-$(omarchy-mac-kernel 2>/dev/null || echo linux-asahi)}
++if [[ -n ${OMARCHY_MKINITCPIO_KERNEL:-} ]]; then
++  kernel=$OMARCHY_MKINITCPIO_KERNEL
++else
++  kernel=$(omarchy-mac-kernel) || {
++    echo "Cannot identify the kernel whose initramfs hooks should be inspected" >&2
++    exit 1
++  }
++fi
++[[ $kernel =~ ^linux-[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || {
++  echo "Invalid kernel package name for initramfs hook inspection" >&2
++  exit 1
++}
+ 
+ drop_ins=1
+ add_hooks=() skip_hooks=()
+diff --git a/bin/omarchy-mac-kernel b/bin/omarchy-mac-kernel
+index 1661507271f58fc0041a2ab3621b1b794b3cc644..529908f779c8ec3e0ec28ce6f2e74b9e8b088ee7 100755
+--- a/bin/omarchy-mac-kernel
++++ b/bin/omarchy-mac-kernel
+@@ -1,20 +1,60 @@
+ #!/bin/bash
+ 
+ # omarchy:summary=Print the installed Apple Silicon kernel package.
++# omarchy:args=[--select kernel]
+ # omarchy:hidden=true
+ 
+ set -euo pipefail
+ 
++selected=""
++if (( $# )); then
++  if (( $# != 2 )) || [[ $1 != "--select" ]]; then
++    echo "Usage: omarchy-mac-kernel [--select kernel]" >&2
++    exit 2
++  fi
++  selected=$2
++  case $selected in
++    linux-asahi | linux-aurora | linux-omarchy-m4-wip5) ;;
++    *) echo "Unknown Apple Silicon kernel package: $selected" >&2; exit 1 ;;
++  esac
++fi
++
+ # Query the target package database: uname can describe the builder's host,
+ # and old module directories can survive a kernel-family replacement.
++# --select only resolves an installed package; it does not activate a kernel
++# or choose the device tree and m1n1 chain that must accompany it.
+ packages=$(pacman -Qq) || {
+   echo "Cannot read the installed kernel packages" >&2
+   exit 1
+ }
+-mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora)$/')
+-if (( ${#kernels[@]} == 1 )); then
++mapfile -t kernels < <(printf '%s\n' "$packages" | awk '/^linux-(asahi|aurora|omarchy-m4-wip5)$/')
++if [[ -n $selected ]]; then
++  if printf '%s\n' "${kernels[@]}" | grep -Fxq -- "$selected"; then
++    printf '%s\n' "$selected"
++  else
++    echo "Selected Apple Silicon kernel is not installed: $selected" >&2
++    exit 1
++  fi
++elif (( ${#kernels[@]} == 1 )); then
+   printf '%s\n' "${kernels[0]}"
+ else
++  # On the real M4 mini, identify the running package by its module metadata
++  # rather than guessing which kernel has the largest version number.
++  compatible=/proc/device-tree/compatible
++  modules=/usr/lib/modules
++  if (( EUID != 0 )); then
++    compatible=${OMARCHY_M4_COMPATIBLE_FILE:-$compatible}
++    modules=${OMARCHY_M4_MODULES_ROOT:-$modules}
++  fi
++  release=$(uname -r)
++  pkgbase=$modules/$release/pkgbase
++  if [[ -n $release && $release != */* && $release != . && $release != .. &&
++        -r $pkgbase && $(<"$pkgbase") == linux-omarchy-m4-wip5 && -r $compatible ]] &&
++    tr '\0' '\n' <"$compatible" | grep -Fxq 'apple,j773g' &&
++    printf '%s\n' "${kernels[@]}" | grep -Fxq linux-omarchy-m4-wip5; then
++    printf '%s\n' linux-omarchy-m4-wip5
++    exit 0
++  fi
+   echo "Expected exactly one installed Apple Silicon kernel package" >&2
+   exit 1
+ fi
+diff --git a/bin/omarchy-mac-m4-limine-menu-check b/bin/omarchy-mac-m4-limine-menu-check
+new file mode 100755
+index 0000000000000000000000000000000000000000..a44a3a6cbd5dc7241c158ba1475f194621c8baba
+--- /dev/null
++++ b/bin/omarchy-mac-m4-limine-menu-check
+@@ -0,0 +1,48 @@
++#!/bin/bash
++
++# omarchy:summary=Check the default Limine menu entry for the M4 research kernel
++# omarchy:hidden=true
++
++# Fail closed for the narrow Omarchy layout we can verify. This does not
++# inspect one-shot EFI variables or prove that the entry will boot.
++set -euo pipefail
++(( $# == 2 )) && [[ $2 == "linux-omarchy-m4-wip5" && -f $1 ]] || exit 1
++awk -v kernel="$2" '
++  {
++    line = $0
++    sub(/^[[:space:]]+/, "", line)
++    sub(/[[:space:]]+$/, "", line)
++  }
++  line ~ /^#/ || line == "" { next }
++  line ~ /^\// {
++    count++
++    if (count == 1) {
++      first = line
++      in_omarchy = (first == "/+Omarchy" || first == "/Omarchy")
++    } else if (line ~ /^\/[^\/]/) {
++      in_omarchy = 0
++    }
++    if (count == 2) second = line
++    if (in_omarchy && line == "//" kernel "-fallback") fallbacks++
++    next
++  }
++  count == 0 {
++    lower = tolower(line)
++    if (lower ~ /^default_entry[[:space:]]*:/) {
++      sub(/^[^:]*:[[:space:]]*/, "", lower)
++      default_entry = lower
++      defaults++
++    }
++    if (lower ~ /^remember_last_entry[[:space:]]*:/) {
++      sub(/^[^:]*:[[:space:]]*/, "", lower)
++      remember = lower
++      remembers++
++    }
++  }
++  END {
++    ok = defaults == 1 && default_entry == "2" && remembers <= 1 &&
++      (remembers == 0 || remember == "no") &&
++      (first == "/+Omarchy" || first == "/Omarchy") && second == "//" kernel && fallbacks == 1
++    exit !ok
++  }
++' "$1"
+diff --git a/bin/omarchy-mac-m4-stage2-check b/bin/omarchy-mac-m4-stage2-check
+new file mode 100755
+index 0000000000000000000000000000000000000000..3621c7197f6a6f609c49555585a19716ae1169c3
+--- /dev/null
++++ b/bin/omarchy-mac-m4-stage2-check
+@@ -0,0 +1,26 @@
++#!/usr/bin/env python3
++"""Verify M4 stage-two components while allowing equivalent gzip headers."""
++from pathlib import Path
++import sys
++import zlib
++
++
++def main():
++    if len(sys.argv) != 6:
++        return 2
++    try:
++        image, loader, dtb, uboot, options = (Path(p).read_bytes() for p in sys.argv[1:])
++        prefix = loader + dtb
++        if not loader or not dtb or not uboot or not image.startswith(prefix):
++            return 1
++        stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
++        payload = stream.decompress(image[len(prefix):], len(uboot) + 1)
++        if not stream.eof or stream.unconsumed_tail or payload != uboot or stream.unused_data != options:
++            return 1
++    except (OSError, ValueError, zlib.error):
++        return 1
++    return 0
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/files/etc/initcpio/install/aurora-vendor-order b/files/etc/initcpio/install/aurora-vendor-order
+new file mode 100755
+index 0000000000000000000000000000000000000000..857556565559fe7c8f9e4f0d2f9d48d38547b35c
+--- /dev/null
++++ b/files/etc/initcpio/install/aurora-vendor-order
+@@ -0,0 +1,15 @@
++#!/bin/bash
++# Keep Aurora's firmware ordering, but do not require the Neo-only radio on M4.
++upstream=/usr/lib/initcpio/install/aurora-vendor-order
++if (( EUID != 0 )); then upstream=${OMARCHY_AURORA_HOOK_FILE:-$upstream}; fi
++[[ -r $upstream ]] || { echo 'M4 initramfs: Aurora firmware hook is missing' >&2; return 1; }
++pkgbase=${_optmoduleroot:-/}/usr/lib/modules/${KERNELVERSION:-}/pkgbase
++if [[ -n ${KERNELVERSION:-} && $KERNELVERSION != */* && $KERNELVERSION != . && $KERNELVERSION != .. &&
++      -r $pkgbase && $(<"$pkgbase") == linux-omarchy-m4-wip5 ]]; then
++  count=$(grep -Ec '^[[:space:]]*add_module[[:space:]]+mt7932-fullmac[[:space:]]*$' "$upstream" || true)
++  [[ $count == 1 ]] || { echo 'M4 initramfs: Aurora firmware hook changed; review its radio handling' >&2; return 1; }
++  # Source the current package's hook, with only its Neo radio made optional.
++  source <(sed -E 's@^([[:space:]]*)add_module[[:space:]]+mt7932-fullmac[[:space:]]*$@\1if modinfo -b "${_optmoduleroot:-/}" -k "$KERNELVERSION" -F filename mt7932-fullmac >/dev/null 2>\&1; then add_module mt7932-fullmac; else echo "M4 initramfs: Neo Wi-Fi module is absent; skipping it" >\&2; fi@' "$upstream")
++else
++  source "$upstream"
++fi
+diff --git a/files/etc/initcpio/install/omarchy-vendorfw b/files/etc/initcpio/install/omarchy-vendorfw
+index 6bd48158622f65cbe2a4e5de797a93974a561e9e..1858355d42740057549f3718645f5ee51d4f794b 100755
+--- a/files/etc/initcpio/install/omarchy-vendorfw
++++ b/files/etc/initcpio/install/omarchy-vendorfw
+@@ -13,6 +13,7 @@ build() {
+     add_binary sleep
+     add_file /usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
+     add_file /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
++    add_file /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+     add_file /usr/lib/omarchy/initcpio/omarchy-vendorfw.service \
+         /usr/lib/systemd/system/omarchy-vendorfw.service 644
+     add_file /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service \
+@@ -37,11 +38,11 @@ Systemd-initrd counterpart of the asahi hook's early/late runscripts: unpacks
+ the vendor firmware from the ESP before cryptsetup-pre.target so the internal
+ keyboard and MTP trackpad work at the sd-encrypt passphrase prompt, then the
+ original omarchy-vendorfw.service copies it onto /lib/firmware/vendor of the
+-unlocked sysroot after sysroot.mount. The early helper polls for the ESP the
+-device tree names, which the late unit mounts, then the image ESP
+-(4F4D-5801), so a migrated Mac's own ESP works too; JobTimeoutSec bounds the
+-wait. If the ESP or vendorfw/firmware.cpio is absent it logs loudly, records
+-/run/omarchy-vendorfw-initrd.status=missing, and still exits 0 so
++unlocked sysroot after sysroot.mount. The early helper selects the booted
++OS's ESP by m1n1's PARTUUID, or uses the image UUID only when that property
++is absent; its bounded wait and unit timeouts avoid hanging on a missing ESP.
++If the ESP or vendorfw/firmware.cpio is absent it logs loudly,
++records /run/omarchy-vendorfw-initrd.status=missing, and still exits 0 so
+ the passphrase prompt is never blocked (keyboard needs no firmware). The
+ early unit is WantedBy initrd-root-device.target and sysinit.target;
+ systemd-cryptsetup@.service Wants/After it so the passphrase prompt pulls
+diff --git a/files/etc/mkinitcpio.conf.d/95-omarchy-mac-m4-wip5.conf b/files/etc/mkinitcpio.conf.d/95-omarchy-mac-m4-wip5.conf
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaa37733a17d371bcf9493012aefeaee2eea8d5f
+--- /dev/null
++++ b/files/etc/mkinitcpio.conf.d/95-omarchy-mac-m4-wip5.conf
+@@ -0,0 +1,30 @@
++# Select the WIP5 target using the module package identity, not the build host.
++# Include the required root-storage and early display modules when available.
++# The driver checks do not establish working M4 graphics or HDMI.
++# A missing critical driver must fail the build; a built-in needs no MODULES
++# entry. modinfo -b follows mkinitcpio -r when building against a staged root.
++if [[ -n ${KERNELVERSION:-} && $KERNELVERSION != */* && $KERNELVERSION != . && $KERNELVERSION != .. ]]; then
++  _omarchy_m4_root=${_optmoduleroot:-/}
++  _omarchy_m4_pkgbase="${_omarchy_m4_root%/}/lib/modules/$KERNELVERSION/pkgbase"
++  _omarchy_m4_target=false
++  if [[ -r $_omarchy_m4_pkgbase && $(<"$_omarchy_m4_pkgbase") == linux-omarchy-m4-wip5 ]]; then
++    _omarchy_m4_target=true
++  elif [[ $KERNELVERSION == *-wip5-m4*-ARCH ]]; then
++    echo 'M4 initramfs: target kernel package identity is missing or incorrect' >&2
++    return 1
++  fi
++  if [[ $_omarchy_m4_target == true ]]; then
++  for _omarchy_m4_module in nvme-apple apple-mailbox apple-dart btrfs appledrm asahi phy-apple-dptx; do
++    _omarchy_m4_path=$(modinfo -b "$_omarchy_m4_root" -k "$KERNELVERSION" -F filename "$_omarchy_m4_module" 2>/dev/null) || {
++      echo "M4 initramfs: required driver $_omarchy_m4_module is unavailable" >&2
++      return 1
++    }
++    case $_omarchy_m4_path in
++      '(builtin)') ;;
++      /*) MODULES+=("$_omarchy_m4_module") ;;
++      *) echo "M4 initramfs: invalid driver path for $_omarchy_m4_module" >&2; return 1 ;;
++    esac
++  done
++  fi
++  unset _omarchy_m4_root _omarchy_m4_pkgbase _omarchy_m4_target _omarchy_m4_module _omarchy_m4_path
++fi
+diff --git a/files/usr/lib/omarchy-mac/boot/m4-bind-esp b/files/usr/lib/omarchy-mac/boot/m4-bind-esp
+new file mode 100755
+index 0000000000000000000000000000000000000000..e1f359f70848fc5c0c4a03a5047f0d551b6cc064
+--- /dev/null
++++ b/files/usr/lib/omarchy-mac/boot/m4-bind-esp
+@@ -0,0 +1,44 @@
++#!/bin/bash
++# Bind the fresh M4 image's update-m1n1 config to the ESP chosen by stage one.
++set -euo pipefail
++compatible=/proc/device-tree/compatible
++chosen=/proc/device-tree/chosen
++config=/etc/m1n1.conf
++helper=/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
++modules=/usr/lib/modules
++if (( EUID != 0 )); then
++  compatible=${OMARCHY_M4_COMPATIBLE_FILE:-$compatible}
++  chosen=${OMARCHY_M4_CHOSEN_DIR:-$chosen}
++  config=${OMARCHY_M4_CONFIG_FILE:-$config}
++  helper=${OMARCHY_M4_VENDORFW_HELPER:-$helper}
++  modules=${OMARCHY_M4_MODULES_ROOT:-$modules}
++fi
++release=$(uname -r)
++[[ -n $release && $release != */* && $release != . && $release != .. &&
++   -r $modules/$release/pkgbase && $(<"$modules/$release/pkgbase") == linux-omarchy-m4-wip5 &&
++   -r $compatible ]] || exit 0
++tr '\0' '\n' <"$compatible" | grep -Fxq 'apple,j773g' || exit 0
++[[ -r $helper && -r $chosen/asahi,efi-system-partition && -r $chosen/gravity,efi-system-partition ]] || {
++  echo 'M4 ESP binding: both booted ESP identifiers are required' >&2; exit 1;
++}
++# shellcheck source=/dev/null
++source "$helper"
++esp=$(omarchy_vendorfw_chosen_esp "$chosen") || { echo 'M4 ESP binding: conflicting ESP identifiers' >&2; exit 1; }
++[[ $esp =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
++  echo 'M4 ESP binding: invalid ESP identifier' >&2; exit 1;
++}
++[[ ! -L $config && ( ! -e $config || -f $config ) ]] || { echo 'M4 ESP binding: invalid configuration file' >&2; exit 1; }
++expected=$(printf 'chosen.gravity,efi-system-partition=%s\nchosen.asahi,efi-system-partition=%s\n' "$esp" "$esp")
++actual=""
++if [[ -f $config ]]; then
++  actual=$(awk '/^[[:space:]]*(chosen\.[^=]*=|display=|mitigations=)/ { sub(/^[[:space:]]+/, ""); print }' "$config")
++fi
++[[ $actual != "$expected" ]] || exit 0
++[[ -z $actual ]] || { echo 'M4 ESP binding: existing m1n1 options need manual review' >&2; exit 1; }
++tmp=$(mktemp "${config}.m4.XXXXXX")
++trap 'rm -f "$tmp"' EXIT
++[[ ! -f $config ]] || cat "$config" >"$tmp"
++if [[ -s $tmp && $(tail -c 1 "$tmp" | wc -l) -eq 0 ]]; then printf '\n' >>"$tmp"; fi
++printf '%s\n' "$expected" >>"$tmp"
++chmod 0644 "$tmp"
++mv -f "$tmp" "$config"
+diff --git a/files/usr/lib/omarchy-mac/boot/m4-coexistence-guard b/files/usr/lib/omarchy-mac/boot/m4-coexistence-guard
+new file mode 100755
+index 0000000000000000000000000000000000000000..8de5ae05062437167fd4be40acacfdb15f9dff61
+--- /dev/null
++++ b/files/usr/lib/omarchy-mac/boot/m4-coexistence-guard
+@@ -0,0 +1,16 @@
++#!/bin/sh
++# Other packages can trigger update-m1n1 even when the M4 package is unchanged.
++packages=$(pacman -Qq) || {
++  echo 'Cannot check installed packages before the m1n1 transaction.' >&2
++  exit 1
++}
++if printf '%s\n' "$packages" | grep -Eq '^(linux-omarchy-m4-wip5|m1n1-omarchy-m4-wip5)$'; then
++  echo 'An unqualified M4 research package is installed; refusing the m1n1 transaction.' >&2
++  exit 1
++else
++  status=$?
++  [ "$status" -eq 1 ] || {
++    echo 'Cannot inspect installed packages before the m1n1 transaction.' >&2
++    exit 1
++  }
++fi
+diff --git a/files/usr/lib/omarchy-mac/boot/m4-wip5-transaction-guard b/files/usr/lib/omarchy-mac/boot/m4-wip5-transaction-guard
+new file mode 100755
+index 0000000000000000000000000000000000000000..a396fb6af7cb170f85dd2021ad45fa10e4800fbc
+--- /dev/null
++++ b/files/usr/lib/omarchy-mac/boot/m4-wip5-transaction-guard
+@@ -0,0 +1,5 @@
++#!/bin/sh
++# Pacman must abort before Asahi's post-transaction m1n1 update can run.
++echo 'M4 research package installation, upgrade and removal are not qualified.' >&2
++echo 'Their m1n1, device tree, initramfs and recovery transaction is not yet safe.' >&2
++exit 1
+diff --git a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa3911c86a4f8cf95c19f7251aad56711c1b6868
+--- /dev/null
++++ b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+@@ -0,0 +1,54 @@
++#!/bin/sh
++# Select the booted OS's ESP; do not use another installation's firmware.
++# Arguments: /dev/disk, m1n1's chosen PARTUUID (possibly empty), image UUID.
++omarchy_vendorfw_chosen_esp() (
++    chosen_dir=$1
++    asahi=
++    gravity=
++    for vendor in asahi gravity; do
++        node="$chosen_dir/$vendor,efi-system-partition"
++        if [ -e "$node" ]; then
++            [ -r "$node" ] || exit 1
++            value=$(tr -d '\000' <"$node" | tr 'A-F' 'a-f')
++            [ -n "$value" ] || exit 1
++            case "$value" in *[!0-9a-f-]*) exit 1 ;; esac
++            case "$vendor" in asahi) asahi=$value ;; gravity) gravity=$value ;; esac
++        fi
++    done
++    [ -z "$asahi" ] || [ -z "$gravity" ] || [ "$asahi" = "$gravity" ] || exit 1
++    printf '%s\n' "${asahi:-$gravity}"
++)
++
++omarchy_vendorfw_device() {
++    disk_dir=$1
++    partuuid=$2
++    image_uuid=$3
++    if [ -n "$partuuid" ]; then
++        case "$partuuid" in *[!0-9a-fA-F-]*) return 1 ;; esac
++        partuuid=$(printf '%s' "$partuuid" | tr 'A-F' 'a-f')
++        candidate="$disk_dir/by-partuuid/$partuuid"
++        if [ -e "$candidate" ]; then
++            printf '%s\n' "$candidate"
++            return 0
++        fi
++        if command -v blkid >/dev/null 2>&1; then
++            candidate=$(blkid -l -t "PARTUUID=$partuuid" -o device 2>/dev/null) || return 1
++            [ -n "$candidate" ] || return 1
++            printf '%s\n' "$candidate"
++            return 0
++        fi
++        return 1
++    fi
++    candidate="$disk_dir/by-uuid/$image_uuid"
++    if [ -e "$candidate" ]; then
++        printf '%s\n' "$candidate"
++        return 0
++    fi
++    if command -v blkid >/dev/null 2>&1; then
++        candidate=$(blkid -U "$image_uuid" 2>/dev/null) || return 1
++        [ -n "$candidate" ] || return 1
++        printf '%s\n' "$candidate"
++        return 0
++    fi
++    return 1
++}
+diff --git a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
+index 11fff8e4d06574a1759861c721173da811d2d793..c139093886ecb655e2b0cd2f473f514319dbd498 100644
+--- a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
++++ b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
+@@ -1,17 +1,17 @@
+ [Unit]
+ Description=Load Apple vendor firmware from the EFI system partition before disk unlock
+ DefaultDependencies=no
+-# No device dependency: a migrated Mac keeps its own ESP, so the helper
+-# polls for the image ESP or the one the device tree says this boot used.
++# No fixed-device dependency: the helper polls the booted OS ESP.
+ After=systemd-modules-load.service systemd-udevd.service
+ Wants=cryptsetup-pre.target
+ Before=cryptsetup-pre.target initrd-root-device.target
+-JobTimeoutSec=15s
++JobTimeoutSec=90s
+ Conflicts=shutdown.target
+ 
+ [Service]
+ Type=oneshot
+ RemainAfterExit=yes
++TimeoutStartSec=60s
+ ExecStart=/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
+ 
+ [Install]
+diff --git a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
+index 1035da280b19f1818465599abeb9dfc2aaa4c68c..91c9565c4ec7ad52fcbd7b518a2d625ae432b7af 100755
+--- a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
++++ b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
+@@ -11,10 +11,19 @@
+ set -eu
+ 
+ image_esp_uuid=4F4D-5801
++. /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+ mnt=/run/omarchy-vendorfw-esp
+ extract=/run/omarchy-vendorfw-extract
+ record=/run/omarchy-vendorfw-initrd.staged
+ status=/run/omarchy-vendorfw-initrd.status
++esp_mounted=0
++extract_mounted=0
++
++cleanup() {
++    [ "$esp_mounted" -eq 0 ] || umount "$mnt" 2>/dev/null || true
++    [ "$extract_mounted" -eq 0 ] || umount "$extract" 2>/dev/null || true
++}
++trap cleanup EXIT
+ 
+ if [ -e "$record" ]; then
+     exit 0
+@@ -28,60 +37,45 @@ log_missing() {
+     exit 0
+ }
+ 
+-esp=
+-dt=${OMARCHY_VENDORFW_DEVICE_TREE_ESP:-/proc/device-tree/chosen/asahi,efi-system-partition}
+-if [ -e "$dt" ]; then
+-    esp=$(tr -d '\0' <"$dt")
++# The upstream test fixture may supply a single alternate device-tree node.
++if [ "${OMARCHY_VENDORFW_DEVICE_TREE_ESP+x}" = x ]; then
++    esp=
++    dt=$OMARCHY_VENDORFW_DEVICE_TREE_ESP
++    if [ -e "$dt" ]; then
++        esp=$(tr -d '\000' <"$dt" | tr 'A-F' 'a-f')
++        [ -n "$esp" ] || log_missing "the test EFI partition identifier is empty"
++        case "$esp" in *[!0-9a-f-]*) log_missing "invalid test EFI partition identifier" ;; esac
++    fi
++else
++    esp=$(omarchy_vendorfw_chosen_esp /proc/device-tree/chosen) ||
++        log_missing "the booted system has invalid or conflicting EFI partition identifiers; vendor firmware was not staged"
+ fi
+ 
++# The chosen partition is authoritative. If it is slow or missing, never
++# substitute another installed OS's image ESP just because its UUID exists.
+ dev=
+ i=0
+-# About fourteen seconds, the unit's JobTimeoutSec, for the NVMe to come up.
+-# The device tree's ESP goes first: this boot used it, and the late
+-# omarchy-vendorfw.sh mounts it.
+-while [ "$i" -lt 140 ]; do
+-    if [ -n "$esp" ]; then
+-        if [ -e "/dev/disk/by-partuuid/$esp" ]; then
+-            dev="/dev/disk/by-partuuid/$esp"
+-            break
+-        fi
+-        if command -v blkid >/dev/null 2>&1; then
+-            found=$(blkid -l -t "PARTUUID=$esp" -o device 2>/dev/null || true)
+-            if [ -n "$found" ]; then
+-                dev=$found
+-                break
+-            fi
+-        fi
+-    fi
+-    if [ -e "/dev/disk/by-uuid/$image_esp_uuid" ]; then
+-        dev="/dev/disk/by-uuid/$image_esp_uuid"
+-        break
+-    fi
+-    if command -v blkid >/dev/null 2>&1; then
+-        found=$(blkid -U "$image_esp_uuid" 2>/dev/null || true)
+-        if [ -n "$found" ]; then
+-            dev=$found
+-            break
+-        fi
+-    fi
++while [ "$i" -lt 150 ]; do
++    dev=$(omarchy_vendorfw_device /dev/disk "$esp" "$image_esp_uuid" || true)
++    [ -z "$dev" ] || break
+     sleep 0.1
+     i=$((i + 1))
+ done
+-if [ -z "$dev" ]; then
+-    log_missing "neither the device tree's ESP (PARTUUID ${esp:-none named}) nor the image ESP $image_esp_uuid is available; vendor firmware was not staged"
+-fi
++[ -n "$dev" ] || log_missing "EFI system partition ${esp:-$image_esp_uuid} is not available; vendor firmware was not staged"
+ 
+-mkdir -p "$mnt"
+-mount -o ro "$dev" "$mnt"
++mkdir -p "$mnt" || log_missing "cannot prepare the EFI mount directory"
++mount -o ro "$dev" "$mnt" || log_missing "cannot mount EFI system partition $dev"
++esp_mounted=1
+ if [ ! -f "$mnt/vendorfw/firmware.cpio" ]; then
+-    umount "$mnt"
+     log_missing "ESP $dev has no vendorfw/firmware.cpio; vendor firmware was not staged"
+ fi
+ 
+-mkdir -p "$extract"
+-mount -t tmpfs -o mode=0755 omarchy-vendorfw-extract "$extract"
+-(cd "$extract" && cpio -i <"$mnt/vendorfw/firmware.cpio")
+-umount "$mnt"
++mkdir -p "$extract" || log_missing "cannot prepare the firmware extraction directory"
++mount -t tmpfs -o mode=0755 omarchy-vendorfw-extract "$extract" || log_missing "cannot mount firmware extraction tmpfs"
++extract_mounted=1
++(cd "$extract" && cpio -i <"$mnt/vendorfw/firmware.cpio") || log_missing "cannot extract firmware.cpio from $dev"
++umount "$mnt" || log_missing "cannot unmount EFI system partition $dev"
++esp_mounted=0
+ 
+ src=$extract/vendorfw
+ if [ ! -d "$src" ]; then
+@@ -91,17 +85,17 @@ fi
+ vendor=/lib/firmware/vendor
+ if [ -L "$vendor" ]; then
+     dest=/vendorfw
+-    mkdir -p "$dest"
++    mkdir -p "$dest" || log_missing "cannot prepare $dest"
+ elif [ -d "$vendor" ]; then
+     dest=$vendor
+ else
+-    mkdir -p /lib/firmware
++    mkdir -p /lib/firmware || log_missing "cannot prepare /lib/firmware"
+     dest=/vendorfw
+-    mkdir -p "$dest"
+-    ln -s /vendorfw "$vendor"
++    mkdir -p "$dest" || log_missing "cannot prepare $dest"
++    ln -s /vendorfw "$vendor" || log_missing "cannot link $vendor"
+ fi
+ # Copy into the destination; never mount tmpfs over an existing vendor tree.
+-cp -r "$src"/. "$dest"/
++cp -r "$src"/. "$dest"/ || log_missing "cannot copy vendor firmware to $dest"
+ 
+ {
+     printf 'dev=%s\n' "$dev"
+diff --git a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service
+index 19798efa8ac0a91ad36a8816152dd9dc8a97d6f3..6187c314624b80298d95d68e545e845e7f510f35 100644
+--- a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service
++++ b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service
+@@ -1,7 +1,8 @@
+ [Unit]
+ Description=Load Apple vendor firmware from the EFI system partition
+ DefaultDependencies=no
+-ConditionPathExists=/proc/device-tree/chosen/asahi,efi-system-partition
++ConditionPathExists=|/proc/device-tree/chosen/asahi,efi-system-partition
++ConditionPathExists=|/proc/device-tree/chosen/gravity,efi-system-partition
+ After=sysroot.mount
+ Before=initrd-fs.target initrd-switch-root.target
+ 
+diff --git a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
+index 608a18944dba635e8ad0ca9647ac5af9b2034861..7b25890261ea9f100618bfc8dbf36a6f967cda75 100755
+--- a/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
++++ b/files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
+@@ -1,8 +1,7 @@
+ #!/usr/bin/sh
+ set -eu
+-dt=/proc/device-tree/chosen/asahi,efi-system-partition
+-[ -e "$dt" ] || exit 0
+-esp=$(tr -d '\0' <"$dt")
++. /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
++esp=$(omarchy_vendorfw_chosen_esp /proc/device-tree/chosen) || exit 0
+ [ -n "$esp" ] || exit 0
+ mnt=/run/omarchy-vendorfw-esp
+ mkdir -p "$mnt"
+diff --git a/files/usr/lib/systemd/system/omarchy-m4-bind-esp.service b/files/usr/lib/systemd/system/omarchy-m4-bind-esp.service
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e9136b733b3b0681fa1f98eb8efc167e017eb69
+--- /dev/null
++++ b/files/usr/lib/systemd/system/omarchy-m4-bind-esp.service
+@@ -0,0 +1,12 @@
++[Unit]
++Description=Bind M4 boot updates to the selected EFI partition
++ConditionPathExists=/proc/device-tree/chosen/gravity,efi-system-partition
++After=local-fs.target
++Before=omarchy-mac-first-boot.service
++
++[Service]
++Type=oneshot
++ExecStart=/usr/lib/omarchy-mac/boot/m4-bind-esp
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/files/usr/share/libalpm/hooks/05-omarchy-mac-m4-wip5-guard.hook b/files/usr/share/libalpm/hooks/05-omarchy-mac-m4-wip5-guard.hook
+new file mode 100644
+index 0000000000000000000000000000000000000000..a99f5dce42bda62d405c837eb3c9832b0cfac435
+--- /dev/null
++++ b/files/usr/share/libalpm/hooks/05-omarchy-mac-m4-wip5-guard.hook
+@@ -0,0 +1,14 @@
++# This hook must already be installed before the transaction to protect it.
++[Trigger]
++Type = Package
++Operation = Install
++Operation = Upgrade
++Operation = Remove
++Target = linux-omarchy-m4-wip5
++Target = m1n1-omarchy-m4-wip5
++
++[Action]
++Description = Refusing unqualified M4 research packages...
++When = PreTransaction
++Exec = /usr/lib/omarchy-mac/boot/m4-wip5-transaction-guard
++AbortOnFail
+diff --git a/files/usr/share/libalpm/hooks/06-omarchy-mac-m4-coexistence-guard.hook b/files/usr/share/libalpm/hooks/06-omarchy-mac-m4-coexistence-guard.hook
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8c1e4ee74e5976f8172a5f2d4683e0ef5b65b19
+--- /dev/null
++++ b/files/usr/share/libalpm/hooks/06-omarchy-mac-m4-coexistence-guard.hook
+@@ -0,0 +1,20 @@
++# Protect other transactions that would rebuild m1n1 while M4 research is installed.
++[Trigger]
++Type = Path
++Operation = Install
++Operation = Upgrade
++Target = usr/lib/modules/*/dtbs/*
++Target = usr/lib/asahi-boot/*
++
++[Trigger]
++Type = Path
++Operation = Install
++Operation = Upgrade
++Operation = Remove
++Target = usr/share/omarchy-platform/dtb-overlays/*
++
++[Action]
++Description = Checking for an unqualified M4 research boot chain...
++When = PreTransaction
++Exec = /usr/lib/omarchy-mac/boot/m4-coexistence-guard
++AbortOnFail
+diff --git a/files/usr/share/libalpm/hooks/91-omarchy-mac-boot-initramfs.hook b/files/usr/share/libalpm/hooks/91-omarchy-mac-boot-initramfs.hook
+index 71e876e9d0db46d5e92ad2e7b60bfc039bef2316..14d3e52cdec6060f929ec29654ad4ec3be7d65ff 100644
+--- a/files/usr/share/libalpm/hooks/91-omarchy-mac-boot-initramfs.hook
++++ b/files/usr/share/libalpm/hooks/91-omarchy-mac-boot-initramfs.hook
+@@ -10,6 +10,7 @@ Target = etc/mkinitcpio.conf.d/92-omarchy-mac-pmp.conf
+ Target = etc/mkinitcpio.conf.d/93-omarchy-mac-plymouth.conf
+ Target = etc/mkinitcpio.conf.d/94-omarchy-mac-vconsole.conf
+ Target = usr/lib/udev/rules.d/90-omarchy-mac-kbd-backlight.rules
++Target = etc/mkinitcpio.conf.d/95-omarchy-mac-m4-wip5.conf
+ Target = etc/initcpio/install/*
+ Target = usr/lib/initcpio/install/*
+ Target = usr/lib/omarchy/initcpio/*
+diff --git a/setup/limine-boot.sh b/setup/limine-boot.sh
+index 0b19be051e4b4e817e8c74831d5ad2ee489babbe..6a6572aeb20fdda8b21ed5d29e3089cc100086a2 100644
+--- a/setup/limine-boot.sh
++++ b/setup/limine-boot.sh
+@@ -36,6 +36,22 @@ omarchy-hw-apple-silicon || return 0
+   findmnt -no TARGET "$esp" >/dev/null 2>&1 || limine_boot_fail "the ESP is not mounted at $esp"
+   # This path is written to a configuration sourced by root.
+   [[ $esp =~ ^/[a-zA-Z0-9_./-]+$ ]] || limine_boot_fail "invalid ESP path"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    # Do not touch an M4 loader until the mounted ESP is the booted system's
++    # ESP and prior stage-two bytes have been saved there. This is only one
++    # input to manual recovery; it does not prove the old chain is bootable.
++    system_esp=$(sudo omarchy-mac-esp) || limine_boot_fail "cannot identify the system ESP"
++    [[ $system_esp == "$esp" ]] || limine_boot_fail "the configured ESP is not the system ESP"
++    recovery="$esp/m1n1/boot.omarchy-m4-recovery.bin"
++    recovery_hash="$esp/m1n1/boot.omarchy-m4-recovery.sha256"
++    sudo test -s "$esp/m1n1/boot.bin" && sudo test -s "$recovery" && sudo test -f "$recovery_hash" &&
++      ! sudo test -L "$recovery" && ! sudo test -L "$recovery_hash" ||
++      limine_boot_fail "the M4 chain has no saved prior stage two and SHA-256 record"
++    expected_recovery=$(sudo cat "$recovery_hash") || limine_boot_fail "cannot read the M4 recovery hash"
++    [[ $expected_recovery =~ ^[0-9a-f]{64}$ ]] &&
++      [[ $(sudo sha256sum "$recovery" | cut -d' ' -f1) == "$expected_recovery" ]] ||
++      limine_boot_fail "the saved M4 stage two does not match its SHA-256 record"
++  fi
+ 
+   limine_backup=$(mktemp -d) || exit 1
+   limine_managed=("$limine_default" "$esp/limine.conf" "$esp/EFI/Linux"
+@@ -112,6 +128,10 @@ KERNEL_CMDLINE[default]=""
+ CONF
+   printf 'ESP_PATH="%s"\nBOOT_ORDER="%s, *, *fallback, Snapshots"\n' "$esp" "$kernel" |
+     sudo tee -a "$limine_default" >/dev/null || limine_boot_fail "cannot finish Limine defaults"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    printf 'MKINITCPIO_FALLBACK="%s"\n' "$kernel" | sudo tee -a "$limine_default" >/dev/null ||
++      limine_boot_fail "cannot enable the M4 fallback UKI"
++  fi
+   sudo install -d "$boot_hooks_dir" || limine_boot_fail "cannot create the command-line hook directory"
+   cmdline_command=$(command -v omarchy-mac-limine-cmdline) || limine_boot_fail "the command-line helper is missing"
+   sudo ln -sfn "$cmdline_command" "$boot_hooks_dir/20-omarchy-mac-cmdline" || limine_boot_fail "cannot install the command-line hook"
+@@ -130,7 +150,21 @@ CONF
+     done
+   fi
+   if (( ! menu_is_ours )); then
++    # Preserve a pre-existing GRUB recovery entry when replacing a foreign
++    # menu in the research lane. This does not make it a tested recovery path.
++    if [[ $kernel == "linux-omarchy-m4-wip5" ]] && sudo test -f "$esp/limine.conf"; then
++      sudo awk '
++        /^\/GRUB \(recovery\)$/ { keep = 1; print; next }
++        keep && /^[[:space:]]/ { print; next }
++        keep && /^[[:space:]]*$/ { print; next }
++        keep { exit }
++      ' "$esp/limine.conf" >"$limine_backup/grub-recovery" || limine_boot_fail "cannot save the old recovery entry"
++    fi
+     sudo install -m600 "$limine_conf_source" "$esp/limine.conf" || limine_boot_fail "cannot install the Limine menu"
++    if [[ -s $limine_backup/grub-recovery ]]; then
++      sudo cat "$limine_backup/grub-recovery" | sudo tee -a "$esp/limine.conf" >/dev/null ||
++        limine_boot_fail "cannot preserve the old recovery entry"
++    fi
+   fi
+   # An image's menu carries no identity, and the entry tool updates such an
+   # entry by name without keying it. Key it to this Mac, so the rebuild, owner
+@@ -150,12 +184,18 @@ CONF
+     sudo test -s "$esp/EFI/Linux/omarchy_$kernel.efi" && sudo grep -Fq "//$kernel" "$esp/limine.conf" &&
+       sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel.efi" "$esp/limine.conf"
+   }
++  m4_has_fallback() {
++    sudo test -s "$esp/EFI/Linux/omarchy_$kernel-fallback.efi" &&
++      sudo grep -Fq "//$kernel-fallback" "$esp/limine.conf" &&
++      sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel-fallback.efi" "$esp/limine.conf"
++  }
+ 
+   # Deferred hardware setup (a fresh image's first boot) rebuilds the boot
+   # image after its last step. A menu that already boots the UKI keeps booting
+   # it until then, so the build is left to that rebuild: one per first boot.
+   rebuild_request=${OMARCHY_IMAGE_BOOT_REBUILD:-}
+-  if [[ -n $rebuild_request ]] && (( menu_is_ours )) && limine_boots_uki; then
++  if [[ -n $rebuild_request ]] && (( menu_is_ours )) && limine_boots_uki &&
++    { [[ $kernel != "linux-omarchy-m4-wip5" ]] || m4_has_fallback; }; then
+     echo "Leaving the Omarchy UKI build to the end of the hardware setup"
+     sudo touch "$rebuild_request" && sudo sync "$rebuild_request" "$(dirname "$rebuild_request")" ||
+       limine_boot_fail "cannot request the UKI build"
+@@ -166,8 +206,13 @@ CONF
+     sudo grep -Fq "//$kernel" "$esp/limine.conf" || limine_boot_fail "limine.conf has no $kernel entry"
+     sudo grep -Fq "boot():/EFI/Linux/omarchy_$kernel.efi" "$esp/limine.conf" || limine_boot_fail "limine.conf does not reference the $kernel UKI"
+   fi
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    m4_has_fallback || limine_boot_fail "limine-update built no M4 fallback UKI and menu entry"
++    sudo omarchy-mac-m4-limine-menu-check "$esp/limine.conf" "$kernel" ||
++      limine_boot_fail "the Limine default does not select the M4 research kernel"
++  fi
+ 
+-  if sudo grep -Fq '/GRUB (recovery)' "$esp/limine.conf"; then
++  if [[ $kernel != "linux-omarchy-m4-wip5" ]] && sudo grep -Fq '/GRUB (recovery)' "$esp/limine.conf"; then
+     sudo awk '
+       /^\/GRUB \(recovery\)$/ { skip = 1; next }
+       skip && /^[[:space:]]/ { next }
+@@ -206,7 +251,9 @@ HOOK
+   sudo limine-snapper-sync || echo "limine-snapper-sync did not finish; snapshot entries come with the next snapshot" >&2
+   sudo systemctl enable --now limine-snapper-sync.service >/dev/null 2>&1 || true
+   sudo rm -rf "$esp/limine" || true
+-  sudo rm -f "$esp/EFI/BOOT/grub-aa64.efi" || true
++  if [[ $kernel != "linux-omarchy-m4-wip5" ]]; then
++    sudo rm -f "$esp/EFI/BOOT/grub-aa64.efi" || true
++  fi
+   if [[ -f $systemd_dir/omarchy-mac-boot-sync.service ]]; then
+     sudo systemctl disable omarchy-mac-boot-sync.service >/dev/null 2>&1 || true
+     sudo rm -f "$systemd_dir/omarchy-mac-boot-sync.service" || true
+diff --git a/test/apple-limine-boot-test.sh b/test/apple-limine-boot-test.sh
+index 94fc7063e563146cbc4687062d8c51837f240560..cf4d011568fb9552dff3a9544aa49e76bc5bb60b 100644
+--- a/test/apple-limine-boot-test.sh
++++ b/test/apple-limine-boot-test.sh
+@@ -19,7 +19,8 @@ mkdir -p "$stub_bin" "$esp/EFI/BOOT" "$etc" "$test_tmp/share/limine" "$test_tmp/
+ 
+ printf '#!/bin/bash\nexec "$@"\n' >"$stub_bin/sudo"
+ printf '#!/bin/bash\nexit 0\n' >"$stub_bin/omarchy-hw-apple-silicon"
+-printf '#!/bin/bash\necho linux-aurora\n' >"$stub_bin/omarchy-mac-kernel"
++printf '#!/bin/bash\necho "${TEST_KERNEL:-linux-aurora}"\n' >"$stub_bin/omarchy-mac-kernel"
++printf '#!/bin/bash\necho "${TEST_SYSTEM_ESP:-$TEST_ESP}"\n' >"$stub_bin/omarchy-mac-esp"
+ printf '#!/bin/bash\necho "systemctl $*" >>"$TEST_CALLS"\n' >"$stub_bin/systemctl"
+ printf '#!/bin/bash\necho "limine-snapper-sync $*" >>"$TEST_CALLS"\n' >"$stub_bin/limine-snapper-sync"
+ cat >"$stub_bin/findmnt" <<'SH'
+@@ -48,14 +49,29 @@ cat >"$stub_bin/limine-update" <<'SH'
+ echo "limine-update" >>"$TEST_CALLS"
+ [[ -z ${FAIL_LIMINE_UPDATE:-} ]] || exit 1
+ mkdir -p "$TEST_ESP/EFI/Linux"
+-printf 'UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_linux-aurora.efi"
++kernel=${TEST_KERNEL:-linux-aurora}
++printf 'UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_$kernel.efi"
++if [[ $kernel == linux-omarchy-m4-wip5 && ${TEST_NO_FALLBACK:-0} != 1 ]]; then
++  printf 'fallback UKI\n' >"$TEST_ESP/EFI/Linux/omarchy_$kernel-fallback.efi"
++fi
+ if ! grep -q '^/+Omarchy' "$TEST_ESP/limine.conf"; then
+   cmdline=$(sed -n 's/^KERNEL_CMDLINE\[default\]="\(.*\)"$/\1/p' "$TEST_LIMINE_DEFAULT")
+-  printf '/+Omarchy\n  //linux-aurora\n  protocol: efi\n  path: boot():/EFI/Linux/omarchy_linux-aurora.efi\n  cmdline: %s\n' "$cmdline" >>"$TEST_ESP/limine.conf"
++  block=$(mktemp)
++  printf '/+Omarchy\n  //%s\n  protocol: efi\n  path: boot():/EFI/Linux/omarchy_%s.efi\n  cmdline: %s\n' "$kernel" "$kernel" "$cmdline" >"$block"
++  if [[ $kernel == linux-omarchy-m4-wip5 && ${TEST_NO_FALLBACK:-0} != 1 ]]; then
++    printf '  //%s-fallback\n  path: boot():/EFI/Linux/omarchy_%s-fallback.efi\n' "$kernel" "$kernel" >>"$block"
++  fi
++  awk -v block="$block" '
++    !inserted && /^\// { while ((getline line < block) > 0) print line; close(block); inserted=1 }
++    { print }
++    END { if (!inserted) while ((getline line < block) > 0) print line }
++  ' "$TEST_ESP/limine.conf" >"$block.menu"
++  cp "$block.menu" "$TEST_ESP/limine.conf"
++  rm -f "$block" "$block.menu"
+ fi
+ SH
+ chmod +x "$stub_bin"/*
+-for name in omarchy-mac-limine-cmdline omarchy-mac-limine-deploy omarchy-mac-limine-active; do
++for name in omarchy-mac-limine-cmdline omarchy-mac-limine-deploy omarchy-mac-limine-active omarchy-mac-m4-limine-menu-check; do
+   ln -s "$ROOT/bin/$name" "$stub_bin/$name"
+ done
+ 
+@@ -71,7 +87,7 @@ printf 'UUID=root-uuid / btrfs subvol=@ 0 0\n' >"$etc/fstab"
+ printf 'aaaabbbbccccddddeeeeffff00001111\n' >"$etc/machine-id"
+ 
+ run() {
+-  TEST_CALLS="$calls" TEST_ESP="$esp" TEST_UPDATE_GRUB_DEFAULT="$etc/update-grub" TEST_LIMINE_DEFAULT="$etc/limine" \
++  TEST_CALLS="$calls" TEST_KERNEL="${TEST_KERNEL:-linux-aurora}" TEST_ESP="$esp" TEST_UPDATE_GRUB_DEFAULT="$etc/update-grub" TEST_LIMINE_DEFAULT="$etc/limine" \
+   TEST_GRUB_DIR="$test_tmp/boot/grub" OMARCHY_GRUB_DIR="$test_tmp/boot/grub" \
+   OMARCHY_PATH="$test_tmp/runtime" OMARCHY_ESP="$esp" OMARCHY_LIMINE_EFI="$test_tmp/share/limine/BOOTAA64.EFI" \
+   OMARCHY_GRUB_DEFAULT="$etc/grub" OMARCHY_UPDATE_GRUB_DEFAULT="$etc/update-grub" OMARCHY_LIMINE_DEFAULT="$etc/limine" \
+@@ -386,3 +402,44 @@ chmod +x "$stub_bin/omarchy-mac-limine-deploy"
+ if run; then fail "success without matching EFI bytes is refused"; fi
+ [[ $(cat "$esp/EFI/BOOT/BOOTAA64.EFI") == "previous-efi" ]] || fail "false-success rollback retains the prior loader"
+ pass "successful activation requires actual packaged EFI bytes"
++
++# The M4-specific menu uses an explicit research default entry.
++printf 'timeout: 3\ndefault_entry: 2\ninterface_branding: Omarchy Bootloader\n' >"$test_tmp/runtime/default/limine/limine.conf"
++
++# M4 research keeps the previous GRUB recovery artifacts and requires a
++# fallback UKI. A foreign menu forces the template-replacement path.
++rm "$stub_bin/omarchy-mac-limine-deploy"
++ln -s "$ROOT/bin/omarchy-mac-limine-deploy" "$stub_bin/omarchy-mac-limine-deploy"
++mkdir -p "$esp/EFI/BOOT"
++printf 'prior recovery EFI\n' >"$esp/EFI/BOOT/grub-aa64.efi"
++printf 'foreign menu\n/GRUB (recovery)\n    protocol: efi_chainload\n    path: boot():/EFI/BOOT/grub-aa64.efi\n' >"$esp/limine.conf"
++mkdir -p "$esp/m1n1"
++printf 'current stage two\n' >"$esp/m1n1/boot.bin"
++cp "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader"
++cp "$esp/limine.conf" "$test_tmp/preflight-menu"
++if TEST_KERNEL=linux-omarchy-m4-wip5 run 2>"$test_tmp/err"; then fail "M4 requires saved stage two before activation"; fi
++grep -Fq 'no saved prior stage two' "$test_tmp/err" || fail "M4 reports the missing stage-two backup"
++cmp -s "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/preflight-loader" && cmp -s "$esp/limine.conf" "$test_tmp/preflight-menu" ||
++  fail "missing recovery fails before changing boot files"
++printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
++sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
++if TEST_KERNEL=linux-omarchy-m4-wip5 TEST_SYSTEM_ESP=/wrong-esp run 2>"$test_tmp/err"; then fail "M4 refuses another ESP"; fi
++grep -Fq 'not the system ESP' "$test_tmp/err" || fail "M4 reports the mismatched system ESP"
++printf 'corrupt\n' >>"$esp/m1n1/boot.omarchy-m4-recovery.bin"
++if TEST_KERNEL=linux-omarchy-m4-wip5 run 2>"$test_tmp/err"; then fail "M4 refuses a corrupted stage-two backup"; fi
++grep -Fq 'does not match its SHA-256' "$test_tmp/err" || fail "M4 reports the corrupt stage-two backup"
++printf 'saved prior stage two\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
++TEST_KERNEL=linux-omarchy-m4-wip5 run || fail "M4 activates with a fallback fixture"
++grep -Fxq 'MKINITCPIO_FALLBACK="linux-omarchy-m4-wip5"' "$etc/limine" || fail "M4 enables its fallback UKI"
++grep -Fxq '/GRUB (recovery)' "$esp/limine.conf" || fail "M4 preserves the prior recovery entry"
++[[ $(cat "$esp/EFI/BOOT/grub-aa64.efi") == 'prior recovery EFI' ]] || fail "M4 preserves the prior recovery EFI file"
++[[ -s $esp/EFI/Linux/omarchy_linux-omarchy-m4-wip5-fallback.efi ]] || fail "M4 builds a fallback UKI"
++cp "$esp/limine.conf" "$test_tmp/m4-prior-menu"
++cp "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/m4-prior-loader"
++rm "$esp/EFI/Linux/omarchy_linux-omarchy-m4-wip5-fallback.efi"
++if TEST_KERNEL=linux-omarchy-m4-wip5 TEST_NO_FALLBACK=1 run; then
++  fail "M4 activation rejects an absent fallback UKI"
++fi
++cmp -s "$esp/limine.conf" "$test_tmp/m4-prior-menu" && cmp -s "$esp/EFI/BOOT/BOOTAA64.EFI" "$test_tmp/m4-prior-loader" ||
++  fail "M4 activation failure restores the prior menu and loader"
++pass "M4 Limine activation retains recovery artifacts and refuses a missing fallback UKI"
+diff --git a/test/apple-silicon-boot-check-test.sh b/test/apple-silicon-boot-check-test.sh
+index 1cd9ce162543264846b6ac46c8ac9bf1ec6ee732..72c15b864f01678c8e6915d991b280f299e03be2 100644
+--- a/test/apple-silicon-boot-check-test.sh
++++ b/test/apple-silicon-boot-check-test.sh
+@@ -101,6 +101,18 @@ if [[ "$1" == "-a" && -f "$2" ]]; then
+   exit 0
+ fi
+ [[ "$1" == "-l" && -f "$2" ]] || exit 1
++if [[ $2 == */m4-uki-fallback.img ]]; then
++  cat "$TEST_UKI_FALLBACK_INITRAMFS_LIST"
++  exit 0
++fi
++if [[ $2 == */m4-uki.img ]]; then
++  cat "$TEST_UKI_INITRAMFS_LIST"
++  exit 0
++fi
++if [[ $2 == *-fallback.img ]]; then
++  cat "$TEST_FALLBACK_INITRAMFS_LIST"
++  exit 0
++fi
+ cat "$TEST_INITRAMFS_LIST"
+ SH
+ # mount copies what it would mount and remembers whether that mount is
+@@ -270,8 +282,8 @@ write_boot_bin() {
+   done
+   mkdir -p "$esp/m1n1"
+   {
+-    cat "$root/usr/lib/asahi-boot/m1n1.bin" "${paths[@]}"
+-    gzip -c "$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
++    cat "$root$m1n1_src" "${paths[@]}"
++    gzip -c "$root$uboot_src"
+     printf 'chosen.asahi,efi-system-partition=1234\ndisplay=2560x1600\nmitigations=off\n'
+   } >"$esp/m1n1/boot.bin"
+ }
+@@ -280,7 +292,18 @@ write_boot_bin() {
+ system() {
+   local kernel=$1 bootloader=m1n1-aurora
+   shift
+-  [[ $kernel == linux-aurora ]] && kver=6.17.0-aurora1-ARCH || { kver=6.14.8-asahi1-1-ARCH bootloader=m1n1; }
++  m1n1_src=/usr/lib/asahi-boot/m1n1.bin
++  uboot_src=/usr/lib/asahi-boot/u-boot-nodtb.bin
++  case $kernel in
++    linux-aurora) kver=6.17.0-aurora1-ARCH ;;
++    linux-asahi) kver=6.14.8-asahi1-1-ARCH bootloader=m1n1 ;;
++    linux-omarchy-m4-wip5)
++      kver=7.2.11-elementary-aurora72-wip5-m4-ARCH
++      bootloader=m1n1-omarchy-m4-wip5
++      m1n1_src=/usr/lib/asahi-boot/omarchy-m4-wip5/m1n1.bin
++      uboot_src=/usr/lib/asahi-boot/omarchy-m4-wip5/u-boot-nodtb.bin ;;
++    *) fail "unknown fixture kernel $kernel" ;;
++  esac
+   modules="$root/usr/lib/modules/$kver"
+   dtbs=()
+   for name in "${@:-t6000-j314s.dtb t6020-j414s.dtb t8103-j274.dtb}"; do
+@@ -299,8 +322,16 @@ system() {
+   for dtb in "${dtbs[@]}"; do
+     write_dtb "$dtb"
+   done
+-  printf 'm1n1 stage 2 from %s\n' "$bootloader" >"$root/usr/lib/asahi-boot/m1n1.bin"
+-  printf 'u-boot\n' >"$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
++  mkdir -p "$(dirname "$root$m1n1_src")"
++  printf 'm1n1 stage 2 from %s\n' "$bootloader" >"$root$m1n1_src"
++  printf 'u-boot\n' >"$root$uboot_src"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    mkdir -p "$root/proc/device-tree" "$root/etc/default"
++    printf 'CONFIG_DRM_ASAHI_G16=y\n' >"$modules/config"
++    printf 'apple,j773g\0apple,t8132\0apple,arm-platform\0' >"$root/proc/device-tree/compatible"
++    printf 'M1N1="%s"\nU_BOOT="%s"\nDTBS="/usr/lib/modules/%s/dtbs/apple/t8132-j773g.dtb"\n' \
++      "$m1n1_src" "$uboot_src" "$kver" >"$root/etc/default/update-m1n1"
++  fi
+   printf '# options\nchosen.asahi,efi-system-partition=1234\ndisplay=2560x1600\n   mitigations=off\nunknown=1\n\n' >"$root/etc/m1n1.conf"
+   write_update_m1n1
+   printf '%s\n' "$kernel" "$kernel-headers" "$bootloader" uboot-asahi >"$test_tmp/files/installed"
+@@ -308,10 +339,67 @@ system() {
+     printf '/usr/\n/usr/lib/\n/usr/lib/modules/\n/usr/lib/modules/%s/\n/usr/lib/modules/%s/vmlinuz\n' "$kver" "$kver"
+     printf '/usr/lib/modules/%s/dtbs/\n' "$kver"
+     printf '%s\n' "${dtbs[@]}"
++    if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++      printf '/usr/lib/modules/%s/config\n' "$kver"
++      for name in nvme-apple nvme-core; do
++        printf '/usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name"
++      done
++      printf '/usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver"
++      for name in dm-mod dm-bufio dm-crypt dm-integrity; do
++        printf '/usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name"
++      done
++      printf '/usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/apple/appledrm.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver"
++      printf '/usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver"
++    fi
+   } >"$test_tmp/files/$kernel"
+-  printf '/usr/lib/asahi-boot/\n/usr/lib/asahi-boot/m1n1.bin\n' >"$test_tmp/files/$bootloader"
++  printf '/usr/lib/asahi-boot/\n%s\n%s\n' "$m1n1_src" "$uboot_src" >"$test_tmp/files/$bootloader"
+   printf 'usr/lib/modules/%s/kernel/drivers/gpu/drm/apple/appledrm.ko.zst\nusr/bin/init\n' "$kver" >"$test_tmp/initramfs"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    for name in nvme-apple nvme-core; do
++      printf 'usr/lib/modules/%s/kernel/drivers/nvme/host/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
++    done
++    printf 'usr/lib/modules/%s/kernel/drivers/soc/apple/apple-sart.ko\n' "$kver" >>"$test_tmp/initramfs"
++    for name in dm-mod dm-bufio dm-crypt dm-integrity; do
++      printf 'usr/lib/modules/%s/kernel/drivers/md/%s.ko\n' "$kver" "$name" >>"$test_tmp/initramfs"
++    done
++    printf 'usr/lib/modules/%s/kernel/fs/btrfs/btrfs.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/drivers/gpu/drm/asahi/asahi.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/drivers/phy/apple/phy-apple-dptx.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/lib/crypto/libmd5.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_xor.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/crypto/async_tx/async_tx.ko\n' "$kver" >>"$test_tmp/initramfs"
++    printf 'usr/lib/modules/%s/kernel/lib/raid/xor/xor.ko\n' "$kver" >>"$test_tmp/initramfs"
++    cat >"$modules/modules.dep" <<'DEPS'
++kernel/drivers/nvme/host/nvme-apple.ko: kernel/drivers/nvme/host/nvme-core.ko kernel/drivers/soc/apple/apple-sart.ko
++kernel/drivers/nvme/host/nvme-core.ko:
++kernel/drivers/soc/apple/apple-sart.ko:
++kernel/drivers/md/dm-mod.ko:
++kernel/drivers/md/dm-bufio.ko: kernel/drivers/md/dm-mod.ko
++kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko kernel/lib/crypto/libmd5.ko
++kernel/drivers/md/dm-integrity.ko: kernel/drivers/md/dm-bufio.ko kernel/crypto/async_tx/async_xor.ko
++kernel/fs/btrfs/btrfs.ko:
++kernel/drivers/gpu/drm/apple/appledrm.ko:
++kernel/drivers/gpu/drm/asahi/asahi.ko:
++kernel/drivers/phy/apple/phy-apple-dptx.ko:
++kernel/lib/crypto/libmd5.ko:
++kernel/crypto/async_tx/async_xor.ko: kernel/crypto/async_tx/async_tx.ko kernel/lib/raid/xor/xor.ko
++kernel/crypto/async_tx/async_tx.ko:
++kernel/lib/raid/xor/xor.ko:
++DEPS
++    cp "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
++    printf 'fallback initramfs\n' >"$root/boot/initramfs-$kernel-fallback.img"
++  fi
+   write_boot_bin "${dtbs[@]}"
++  if [[ $kernel == "linux-omarchy-m4-wip5" ]]; then
++    printf 'saved stage 2 from the previous system\n' >"$esp/m1n1/boot.omarchy-m4-recovery.bin"
++    sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
++  fi
+   pkgver=6.14.8-1
+   archive_sha=$(printf '%064d' 1)
+   if [[ $kernel == linux-aurora ]]; then
+@@ -335,6 +423,9 @@ run_check() {
+     TEST_CALLS="$calls" \
+     TEST_FILES="$test_tmp/files" \
+     TEST_INITRAMFS_LIST="$test_tmp/initramfs" \
++    TEST_FALLBACK_INITRAMFS_LIST="$test_tmp/initramfs-fallback" \
++    TEST_UKI_INITRAMFS_LIST="$test_tmp/initramfs-uki" \
++    TEST_UKI_FALLBACK_INITRAMFS_LIST="$test_tmp/initramfs-uki-fallback" \
+     TEST_MOUNTS="$mounts" \
+     TEST_PARTUUID=$partuuid \
+     TEST_ESP_DEVICE="$esp_device" \
+@@ -495,6 +586,148 @@ run_check
+ expect_fail "linux-aurora with both bootloader providers" "more than one bootloader provider installed: m1n1-aurora aura"
+ pass "a missing, unknown, ambiguous or mismatched kernel and bootloader pair fails"
+ 
++# M4 research uses a private loader and exact J773g tree. A known-good kernel
++# and loader may remain installed, but the selected menu and active stage 2
++# still have to match the research kernel and its package-owned files.
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++run_check
++expect_fail "the M4 GRUB chain until its default selection is supported" "M4 GRUB default selection is not verified"
++printf 'linux-aurora\nm1n1-aurora\n' >>"$test_tmp/files/installed"
++run_check
++expect_fail "two installed kernels without an explicit choice" "cannot tell which kernel boots"
++run_check linux-omarchy-m4-wip5
++expect_fail "M4 selected explicitly beside the known-good kernel on unverified GRUB" "M4 GRUB default selection is not verified"
++run_check --boot-chain
++expect_fail "the first M4 GRUB reference is not a verified default" "M4 GRUB default selection is not verified"
++printf 'apple,j713g\0apple,t8132\0' >"$root/proc/device-tree/compatible"
++run_check linux-omarchy-m4-wip5
++expect_fail "a different M4 device" "requires the M4 Mac mini (apple,j773g)"
++
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++printf '# CONFIG_DRM_ASAHI_G16 is not set\n' >"$modules/config"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 kernel without the G16 backend" "does not enable the G16 backend"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without Apple NVMe" "missing required M4 storage module nvme-apple"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/btrfs\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without Btrfs" "missing required M4 storage module btrfs"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/phy-apple-dptx\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without the HDMI PHY" "missing required M4 display module phy-apple-dptx"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without the NVMe SART dependency" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without dm-crypt" "missing required M4 storage module dm-crypt"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/libmd5\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs missing a dm-crypt dependency" "missing from image: kernel/lib/crypto/libmd5.ko"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/async_xor\.ko/d' "$test_tmp/files/linux-omarchy-m4-wip5"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 kernel missing an owned dm-integrity dependency" "not owned by the kernel package: kernel/crypto/async_tx/async_xor.ko"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/async_tx\.ko:/d' "$modules/modules.dep"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 kernel with incomplete transitive dependency metadata" "no modules.dep entry for kernel/crypto/async_tx/async_tx.ko"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++rm "$modules/modules.dep"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 kernel without module dependency metadata" "no readable modules.dep"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/dm-bufio\.ko/d' "$test_tmp/initramfs"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 initramfs without the dm-integrity buffer dependency" "missing required M4 storage module dm-bufio"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/dm-integrity\.ko/d' "$test_tmp/files/linux-omarchy-m4-wip5"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 kernel without dm-integrity" "no built-in or package-owned dm-integrity driver"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++rm "$root/boot/initramfs-linux-omarchy-m4-wip5-fallback.img"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 system without a fallback image" "fallback.img cannot be listed"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback without Apple NVMe" "missing required M4 storage module nvme-apple"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback without dm-integrity" "missing required M4 storage module dm-integrity"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i "s/$kver/another-release/g" "$test_tmp/initramfs-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback for a different kernel" "does not hold the $kver modules"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++for name in nvme-apple nvme-core apple-sart dm-mod dm-bufio dm-crypt dm-integrity; do
++  sed -i "/$name\\.ko/d" "$test_tmp/files/linux-omarchy-m4-wip5" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"
++  printf 'kernel/drivers/apple/%s.ko\n' "$name" >>"$modules/modules.builtin"
++done
++run_check linux-omarchy-m4-wip5
++expect_fail "built-in M4 storage drivers pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++for file in "$test_tmp/files/linux-omarchy-m4-wip5" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback"; do
++  sed -i '/dm-mod\.ko/d' "$file"
++done
++sed -i 's# kernel/drivers/md/dm-mod\.ko##g; /kernel\/drivers\/md\/dm-mod\.ko:/d' "$modules/modules.dep"
++printf 'kernel/drivers/md/dm-mod.ko\n' >>"$modules/modules.builtin"
++run_check linux-omarchy-m4-wip5
++expect_fail "a built-in device mapper with modular encryption drivers" "M4 GRUB default selection is not verified"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++for file in "$test_tmp/files/linux-omarchy-m4-wip5" "$test_tmp/initramfs" "$test_tmp/initramfs-fallback" "$modules/modules.dep"; do
++  sed -i -e 's/nvme-apple\.ko/nvme_apple.ko.zst/g' -e 's/nvme-core\.ko/nvme_core.ko.xz/g' \
++    -e 's/apple-sart\.ko/apple_sart.ko.gz/g' -e 's/libmd5\.ko/libmd5.ko.zst/g' "$file"
++done
++run_check linux-omarchy-m4-wip5
++expect_fail "compressed storage modules pass storage checks before the GRUB gate" "M4 GRUB default selection is not verified"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++rm "$esp/m1n1/boot.omarchy-m4-recovery.bin"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 chain with no saved stage 2" "no saved prior stage 2"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++printf 'corruption\n' >>"$esp/m1n1/boot.omarchy-m4-recovery.bin"
++run_check linux-omarchy-m4-wip5
++expect_fail "a corrupted saved stage 2" "does not match its SHA-256 record"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++cp "$esp/m1n1/boot.bin" "$esp/m1n1/boot.omarchy-m4-recovery.bin"
++sha256sum "$esp/m1n1/boot.omarchy-m4-recovery.bin" | cut -d' ' -f1 >"$esp/m1n1/boot.omarchy-m4-recovery.sha256"
++run_check linux-omarchy-m4-wip5
++expect_fail "a saved stage 2 identical to the active chain" "identical to the current research chain"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++printf 'M1N1_UPDATE_DISABLED=1\n' >>"$root/etc/default/update-m1n1"
++run_check --boot-chain linux-omarchy-m4-wip5
++expect_fail "an M4 chain that skips m1n1 verification" "M1N1_UPDATE_DISABLED prevents verifying"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++printf 'other u-boot\n' >"$root/usr/lib/asahi-boot/u-boot-nodtb.bin"
++printf 'U_BOOT=/usr/lib/asahi-boot/u-boot-nodtb.bin\n' >>"$root/etc/default/update-m1n1"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 chain pointed at the unrelated U-Boot" "requires its private m1n1 and U-Boot paths"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++sed -i '\|u-boot-nodtb.bin|d' "$test_tmp/files/m1n1-omarchy-m4-wip5"
++run_check linux-omarchy-m4-wip5
++expect_fail "M4 U-Boot not owned by its loader package" "U_BOOT $uboot_src is not owned by"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++write_dtb "/usr/lib/modules/$kver/dtbs/apple/t8132-other.dtb"
++printf '/usr/lib/modules/%s/dtbs/apple/t8132-other.dtb\n' "$kver" >>"$test_tmp/files/linux-omarchy-m4-wip5"
++printf 'DTBS="/usr/lib/modules/%s/dtbs/apple/t8132-other.dtb"\n' "$kver" >>"$root/etc/default/update-m1n1"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 bundle using another owned tree" "must use exactly its J773g device tree"
++system linux-omarchy-m4-wip5 apple/t8132-j773g.dtb
++{ printf 'linux /vmlinuz-linux-other root=UUID=x\n'; cat "$root/boot/grub/grub.cfg"; } >"$test_tmp/grub-new"
++mv "$test_tmp/grub-new" "$root/boot/grub/grub.cfg"
++run_check linux-omarchy-m4-wip5
++expect_fail "another kernel ahead of M4 in GRUB" "the first GRUB kernel reference is not linux-omarchy-m4-wip5"
++pass "M4 boot checking requires the mini, matching storage image, private loader, J773g tree and selected menu"
++
+ # The ESP is only ever read through a read-only mount.
+ system linux-aurora
+ mkdir -p "$root/proc/device-tree/chosen" "$esp_device"
+@@ -505,6 +738,14 @@ run_check
+ expect_pass "an ESP named in the device tree and not mounted"
+ grep -Eq "^mount -o ro PARTUUID=$partuuid $root/run/omarchy-esp\.[A-Za-z0-9]{6}\$" "$calls" ||
+   fail "an unmounted ESP is mounted read-only by its PARTUUID" "$(cat "$calls")"
++mv "$root/proc/device-tree/chosen/asahi,efi-system-partition" "$root/proc/device-tree/chosen/gravity,efi-system-partition"
++run_check
++expect_pass "an ESP named by Gravity's device-tree property"
++printf '11111111-0001\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
++run_check
++expect_fail "conflicting Asahi and Gravity ESP names" "system ESP identifiers disagree"
++rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
++mv "$root/proc/device-tree/chosen/gravity,efi-system-partition" "$root/proc/device-tree/chosen/asahi,efi-system-partition"
+ TEST_RO_REFUSED=1 run_check
+ expect_fail "an ESP the kernel will not mount read-only" "cannot mount the system ESP (PARTUUID=$partuuid) read-only"
+ (( $(grep -c '^mount ' "$calls") == 1 )) || fail "a refused read-only mount is not retried writable" "$(cat "$calls")"
+@@ -799,9 +1040,14 @@ pass "missing sync database warnings are not altered package files"
+ # filesystem, and the hash-verified UKI carries the installed kernel.
+ cat >"$stub_bin/objcopy" <<'SH'
+ #!/bin/bash
+-# Fixture UKIs are the kernel bytes followed by a marker: .linux is the file.
+-[[ $* == "-O binary --only-section=.linux "* ]] || exit 1
+-cp "$4" "$5"
++# Fixture UKIs carry the kernel bytes followed by a marker.
++case "$*" in
++  '-O binary --only-section=.linux '*) cp "$4" "$5" ;;
++  '-O binary --only-section=.initrd '*)
++    ! grep -q 'broken-initrd' "$4" || exit 1
++    printf 'embedded initramfs\n' >"$5" ;;
++  *) exit 1 ;;
++esac
+ SH
+ chmod +x "$stub_bin/objcopy"
+ limine_system() {
+@@ -822,6 +1068,91 @@ limine_system() {
+   rm -f "$root/boot/grub/grub.cfg"
+ }
+ 
++m4_limine_system() {
++  local kernel=linux-omarchy-m4-wip5 cmdline='root=UUID=r rw rootflags=subvol=@ quiet' uki fallback
++  system "$kernel" apple/t8132-j773g.dtb
++  mkdir -p "$root/var/lib/omarchy" "$root/usr/share/limine" "$esp/EFI/Linux" "$esp/EFI/BOOT"
++  : >"$root/var/lib/omarchy/limine.enabled"
++  printf 'ESP_PATH="/boot/efi"\nENABLE_UKI=yes\n' >"$root/etc/default/limine"
++  printf 'UUID=r / btrfs rw,subvol=/@ 0 0\n' >"$root/etc/fstab"
++  printf 'LIMINE\n' >"$root/usr/share/limine/BOOTAA64.EFI"
++  cp "$root/usr/share/limine/BOOTAA64.EFI" "$esp/EFI/BOOT/BOOTAA64.EFI"
++  uki="$esp/EFI/Linux/omarchy_$kernel.efi"
++  fallback="$esp/EFI/Linux/omarchy_$kernel-fallback.efi"
++  { cat "$modules/vmlinuz"; printf 'initrd\n'; } >"$uki"
++  { cat "$modules/vmlinuz"; printf 'fallback initrd\n'; } >"$fallback"
++  printf 'default_entry: 2\n/+Omarchy\n  //%s\n    protocol: efi\n    path: boot():/EFI/Linux/omarchy_%s.efi#%s\n    cmdline: %s\n  //%s-fallback\n    protocol: efi\n    path: boot():/EFI/Linux/omarchy_%s-fallback.efi#%s\n    cmdline: %s\n' \
++    "$kernel" "$kernel" "$(b2sum "$uki" | cut -d' ' -f1)" "$cmdline" \
++    "$kernel" "$kernel" "$(b2sum "$fallback" | cut -d' ' -f1)" "$cmdline" >"$esp/limine.conf"
++  cp "$test_tmp/initramfs" "$test_tmp/initramfs-uki"
++  cp "$test_tmp/initramfs-fallback" "$test_tmp/initramfs-uki-fallback"
++}
++
++m4_limine_system
++run_check linux-omarchy-m4-wip5
++expect_pass "M4 Limine UKIs with matching embedded storage drivers"
++m4_limine_system
++printf 'M1N1_UPDATE_DISABLED=1\n' >>"$root/etc/default/update-m1n1"
++run_check linux-omarchy-m4-wip5
++expect_fail "M4 with m1n1 updates disabled" "M1N1_UPDATE_DISABLED prevents verifying the M4 research boot chain"
++! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest an unqualified updater"
++m4_limine_system
++printf 'corruption\n' >>"$esp/m1n1/boot.bin"
++run_check linux-omarchy-m4-wip5
++expect_fail "M4 with a mismatched active stage 2" "does not match the M4 research chain"
++! grep -Fq 'run sudo update-m1n1' "$test_tmp/err" || fail "M4 does not suggest rebuilding a mismatched stage 2"
++m4_limine_system
++printf 'linux-aurora\nm1n1-aurora\n' >>"$test_tmp/files/installed"
++run_check --boot-chain
++expect_pass "M4 Limine selected beside the known-good kernel"
++run_check linux-omarchy-m4-wip5
++expect_pass "M4 Limine explicitly selected beside the known-good kernel"
++m4_limine_system
++sed -i 's/default_entry: 2/default_entry: 3/' "$esp/limine.conf"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 Limine menu that defaults to another entry" "M4 Limine default does not select the research kernel"
++m4_limine_system
++sed -i '1i remember_last_entry: yes' "$esp/limine.conf"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 Limine menu that remembers another entry" "M4 Limine default does not select the research kernel"
++m4_limine_system
++sed -i '/^\/+Omarchy/i /Other OS' "$esp/limine.conf"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 Limine menu with another entry ahead of Omarchy" "M4 Limine default does not select the research kernel"
++m4_limine_system
++sed -i '/nvme-apple\.ko/d' "$test_tmp/initramfs-uki"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 main UKI without Apple NVMe" "the M4 default UKI is missing required M4 storage module nvme-apple"
++m4_limine_system
++sed -i '/apple-sart\.ko/d' "$test_tmp/initramfs-uki-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback UKI without SART" "missing from image: kernel/drivers/soc/apple/apple-sart.ko"
++m4_limine_system
++sed -i '/dm-crypt\.ko/d' "$test_tmp/initramfs-uki"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 main UKI without dm-crypt" "the M4 default UKI is missing required M4 storage module dm-crypt"
++m4_limine_system
++sed -i '/dm-integrity\.ko/d' "$test_tmp/initramfs-uki-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback UKI without dm-integrity" "the M4 fallback UKI is missing required M4 storage module dm-integrity"
++m4_limine_system
++sed -i '/async_tx\.ko/d' "$test_tmp/initramfs-uki-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback UKI missing a transitive integrity dependency" "missing from image: kernel/crypto/async_tx/async_tx.ko"
++m4_limine_system
++sed -i '/dm-mod\.ko/d' "$test_tmp/initramfs-uki-fallback"
++run_check linux-omarchy-m4-wip5
++expect_fail "an M4 fallback UKI without device mapper" "the M4 fallback UKI is missing required M4 storage module dm-mod"
++m4_limine_system
++printf 'corruption\n' >>"$esp/EFI/Linux/omarchy_linux-omarchy-m4-wip5-fallback.efi"
++run_check linux-omarchy-m4-wip5
++expect_fail "a corrupted M4 fallback UKI" "fallback UKI does not match its menu hash"
++m4_limine_system
++sed -i '$s/root=UUID=r/root=UUID=wrong/' "$esp/limine.conf"
++run_check linux-omarchy-m4-wip5
++expect_fail "a fallback UKI with a different root command line" "fallback entry does not carry the checked kernel command line"
++pass "M4 Limine verifies the two embedded initramfs images, fallback hash and command line"
++
+ limine_system /boot/efi 'UUID=r / btrfs rw,subvol=/@ 0 0' 'root=UUID=r rw rootflags=subvol=@,x-systemd.device-timeout=0 quiet'
+ run_check
+ expect_pass "a Limine Mac with its ESP at /boot/efi"
+diff --git a/test/mac-esp-test.sh b/test/mac-esp-test.sh
+index 7252d9343d77e80b0f0c0048863814b4cb43532e..b3b1d75fa87f2d2b0aa9338e9bb2c76f0bd5c698 100644
+--- a/test/mac-esp-test.sh
++++ b/test/mac-esp-test.sh
+@@ -10,6 +10,7 @@ test_tmp=$(mktemp -d)
+ trap 'rm -rf "$test_tmp"' EXIT
+ stub_bin=$test_tmp/bin
+ esp_node=$test_tmp/esp-partuuid
++gravity_node=$test_tmp/gravity-esp-partuuid
+ mounts=$test_tmp/mounts
+ mkdir -p "$stub_bin"
+ 
+@@ -21,7 +22,8 @@ SH
+ chmod +x "$stub_bin/findmnt"
+ 
+ find_esp() {
+-  OMARCHY_ESP_PARTUUID_FILE="$esp_node" TEST_MOUNTS="$mounts" PATH="$stub_bin:$PATH" bash "$ROOT/bin/omarchy-mac-esp" 2>"$test_tmp/err"
++  OMARCHY_ESP_PARTUUID_FILE="$esp_node" OMARCHY_ESP_GRAVITY_PARTUUID_FILE="$gravity_node" \
++    TEST_MOUNTS="$mounts" PATH="$stub_bin:$PATH" bash "$ROOT/bin/omarchy-mac-esp" 2>"$test_tmp/err"
+ }
+ 
+ printf '5F2B0C3E-0002\0' >"$esp_node"
+@@ -36,6 +38,15 @@ printf '/boot/efi vfat /EFI 5f2b0c3e-0002\n' >"$mounts"
+ grep -Fq 'PARTUUID=5f2b0c3e-0002' "$test_tmp/err" || fail "the missing ESP is named"
+ printf '/boot/efi autofs / \n/boot/efi vfat / 5f2b0c3e-0002\n' >"$mounts"
+ [[ $(find_esp) == /boot/efi ]] || fail "an ESP mounted over its automount point is found"
++printf '5f2b0c3e-0002\0' >"$gravity_node"
++[[ $(find_esp) == /boot/efi ]] || fail "matching Asahi and Gravity ESP names are accepted"
++printf '11111111-0001\0' >"$gravity_node"
++! find_esp >/dev/null || fail "conflicting Asahi and Gravity ESP names are refused"
++grep -Fq 'identifiers disagree' "$test_tmp/err" || fail "conflicting ESP identifiers are reported"
++rm "$esp_node"
++printf '/boot vfat / 11111111-0001\n' >"$mounts"
++[[ $(find_esp) == /boot ]] || fail "the Gravity-only ESP name is accepted"
++rm "$gravity_node"
+ rm -f "$esp_node"
+ printf '/boot vfat / 11111111-0001\n' >"$mounts"
+ [[ $(find_esp) == /boot ]] || fail "without a device tree name the FAT filesystem at /boot is the ESP"
+diff --git a/test/mac-hid-initramfs-test.sh b/test/mac-hid-initramfs-test.sh
+index d18eb8a471cd36a12966d7e3de7196e6ea9627e9..4dee1fc3fb7b17b6c7d39e41672767208e500ed5 100644
+--- a/test/mac-hid-initramfs-test.sh
++++ b/test/mac-hid-initramfs-test.sh
+@@ -9,6 +9,7 @@ install_hook=$files/etc/initcpio/install/omarchy-vendorfw
+ late_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
+ late_unit=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw.service
+ early_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
++device_sh=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+ early_unit=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
+ cryptsetup_dropin=$files/usr/lib/omarchy/initcpio/omarchy-vendorfw-cryptsetup.conf
+ 
+@@ -23,6 +24,7 @@ fail() {
+ [[ -f $late_sh ]] || fail "omarchy-vendorfw.sh is in the package files tree"
+ [[ -f $late_unit ]] || fail "the post-mount vendorfw unit is in the package files tree"
+ [[ -f $early_sh ]] || fail "omarchy-vendorfw-initrd.sh is in the package files tree"
++[[ -f $device_sh ]] || fail "the booted-ESP selector is in the package files tree"
+ [[ -f $early_unit ]] || fail "omarchy-vendorfw-initrd.service is in the package files tree"
+ [[ -f $cryptsetup_dropin ]] || fail "the systemd-cryptsetup@.service drop-in is in the package files tree"
+ [[ ! -e $files/usr/lib/omarchy/initcpio/omarchy-vendorfw-sysroot.service ]] ||
+@@ -37,6 +39,8 @@ grep -Fq 'Before=cryptsetup-pre.target' "$early_unit" ||
+ if grep -E '^(After|Wants|Requires|BindsTo)=' "$early_unit" | grep -Fq 'dev-disk-by'; then
+   fail "the early unit must not wait on one ESP device: a migrated Mac keeps its own ESP"
+ fi
++grep -E '^After=' "$early_unit" | grep -Fq 'systemd-udevd.service' ||
++  fail "the early unit starts after udev"
+ grep -Eq '^JobTimeoutSec=' "$early_unit" ||
+   fail "the early unit sets JobTimeoutSec so a missing ESP cannot hang forever"
+ grep -Fq 'DefaultDependencies=no' "$early_unit" ||
+@@ -50,6 +54,8 @@ if grep -Fq 'After=sysroot.mount' "$early_unit"; then
+ fi
+ grep -Fq 'omarchy-vendorfw-initrd.service' "$install_hook" ||
+   fail "the combined hook installs omarchy-vendorfw-initrd.service"
++grep -Fq 'omarchy-vendorfw-device.sh' "$install_hook" ||
++  fail "the combined hook installs the ESP selector"
+ grep -Fq 'omarchy-vendorfw.service' "$install_hook" ||
+   fail "the combined hook still installs the post-mount unit"
+ grep -Fq 'initrd-root-device.target.wants/omarchy-vendorfw-initrd.service' "$install_hook" ||
+@@ -265,6 +271,7 @@ modinfo -k "$kver" -F filename dockchannel-hid | grep -q '^/' ||
+ 
+ install -Dm755 "$late_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw.sh
+ install -Dm755 "$early_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh
++install -Dm644 "$device_sh" /usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
+ install -Dm644 "$late_unit" /usr/lib/omarchy/initcpio/omarchy-vendorfw.service
+ install -Dm644 "$early_unit" /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.service
+ install -Dm644 "$cryptsetup_dropin" /usr/lib/omarchy/initcpio/omarchy-vendorfw-cryptsetup.conf
+@@ -313,6 +320,7 @@ grep -Eq '(^|/)thunderbolt\.ko' "$list" || fail "lsinitcpio lists thunderbolt (d
+ grep -Eq '(^|/)thunderbolt[-_]apple\.ko' "$list" || fail "lsinitcpio lists thunderbolt_apple, the Apple Silicon USB4 host router" "$(cat "$list")"
+ grep -Fq 'omarchy-vendorfw.sh' "$list" || fail "lsinitcpio lists the late vendorfw script"
+ grep -Fq 'omarchy-vendorfw-initrd.sh' "$list" || fail "lsinitcpio lists the early vendorfw helper"
++grep -Fq 'omarchy-vendorfw-device.sh' "$list" || fail "lsinitcpio lists the ESP selector"
+ grep -Fq 'omarchy-vendorfw.service' "$list" || fail "lsinitcpio lists the late vendorfw unit"
+ grep -Fq 'omarchy-vendorfw-initrd.service' "$list" || fail "lsinitcpio lists the early vendorfw unit"
+ grep -Fq 'cryptsetup-pre.target.wants/omarchy-vendorfw-initrd.service' "$list" ||
+diff --git a/test/mac-initramfs-hooks-test.sh b/test/mac-initramfs-hooks-test.sh
+index 810a319d2451dbbf8322b0ed6b4568dab6071173..7490ded6a834bf89e5f21cd52877ad9cde337193 100644
+--- a/test/mac-initramfs-hooks-test.sh
++++ b/test/mac-initramfs-hooks-test.sh
+@@ -60,10 +60,34 @@ pass "an unknown option, an unreadable configuration or no HOOKS exit 1"
+ 
+ cat >"$tmp/bin/pacman" <<'SH'
+ #!/bin/bash
+-[[ $* == "-Qq" ]] && printf 'linux-aurora\n'
++[[ $* == "-Qq" ]] || exit 1
++[[ ${QUERY_FAIL:-0} == 0 ]] || exit 1
++printf '%s\n' "${PACKAGES-linux-aurora}"
+ SH
+ chmod +x "$tmp/bin/pacman"
+ printf 'PRESETS=(default)\ndefault_config=%s\n' "$systemd" >"$tmp/presets/linux-aurora.preset"
+ [[ " $(PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox "$ROOT/bin/omarchy-mac-initramfs-hooks") " == *" systemd "* ]] ||
+   fail "the installed kernel's preset is read"
+ pass "the preset follows the installed Apple Silicon kernel"
++
++printf 'PRESETS=(default)\ndefault_config=%s\n' "$busybox" >"$tmp/presets/linux-asahi.preset"
++for packages in '' linux $'linux-aurora\nlinux-omarchy-m4-wip5' $'linux-asahi\nlinux-aurora'; do
++  if PACKAGES="$packages" PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox \
++    "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
++    fail "ambiguous installed kernels do not silently select the linux-asahi preset"
++  fi
++done
++if QUERY_FAIL=1 PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox \
++  "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
++  fail "an unreadable package database does not silently select a preset"
++fi
++if PATH="$tmp/bin:$ROOT/bin:$PATH" OMARCHY_MKINITCPIO_CONF=$busybox OMARCHY_MKINITCPIO_KERNEL='../other' \
++  "$ROOT/bin/omarchy-mac-initramfs-hooks" >/dev/null 2>&1; then
++  fail "an explicit kernel cannot traverse outside the preset directory"
++fi
++printf 'PRESETS=(default)\ndefault_config=%s\n' "$systemd" >"$tmp/presets/linux-omarchy-m4-wip5.preset"
++[[ " $(PACKAGES=$'linux-aurora\nlinux-omarchy-m4-wip5' PATH="$tmp/bin:$ROOT/bin:$PATH" \
++  OMARCHY_MKINITCPIO_CONF=$busybox OMARCHY_MKINITCPIO_KERNEL=linux-omarchy-m4-wip5 \
++  "$ROOT/bin/omarchy-mac-initramfs-hooks") " == *" systemd "* ]] ||
++  fail "an explicit M4 preset is inspected even when another kernel is installed"
++pass "ambiguous or unreadable kernel selection fails closed, while an explicit safe preset is supported"
+diff --git a/test/mac-kernel-test.sh b/test/mac-kernel-test.sh
+index de4df60f30757d3e7c0d2f94ea651c99e378ec15..6fee248363c24edde450bec5762344ac15d496aa 100644
+--- a/test/mac-kernel-test.sh
++++ b/test/mac-kernel-test.sh
+@@ -12,11 +12,54 @@ printf '%s\n' "$PACKAGES"
+ SH
+ chmod +x "$tmp/pacman"
+ export PATH="$tmp:$PATH"
+-for kernel in linux-asahi linux-aurora; do
++for kernel in linux-asahi linux-aurora linux-omarchy-m4-wip5; do
+   [[ $(PACKAGES="$kernel" "$ROOT/bin/omarchy-mac-kernel") == "$kernel" ]] || fail "installed $kernel is selected"
+ done
+-for packages in '' linux $'linux-asahi\nlinux-aurora'; do
++for packages in '' linux $'linux-asahi\nlinux-aurora' $'linux-aurora\nlinux-omarchy-m4-wip5'; do
+   if PACKAGES="$packages" "$ROOT/bin/omarchy-mac-kernel"; then fail "missing or ambiguous kernel is refused"; fi
+ done
+ if QUERY_FAIL=1 PACKAGES=linux-asahi "$ROOT/bin/omarchy-mac-kernel"; then fail "package query failure is refused"; fi
+ pass "kernel selection uses installed packages and refuses missing or ambiguous results"
++
++both=$'linux-aurora\nlinux-omarchy-m4-wip5'
++for kernel in linux-aurora linux-omarchy-m4-wip5; do
++  [[ $(PACKAGES="$both" "$ROOT/bin/omarchy-mac-kernel" --select "$kernel") == "$kernel" ]] ||
++    fail "an explicitly selected installed kernel is returned"
++done
++if PACKAGES="$both" "$ROOT/bin/omarchy-mac-kernel" --select linux-asahi >/dev/null 2>&1; then
++  fail "an explicitly selected but absent kernel is refused"
++fi
++if PACKAGES="$both" "$ROOT/bin/omarchy-mac-kernel" --select linux-other >/dev/null 2>&1; then
++  fail "an unknown kernel is refused"
++fi
++if QUERY_FAIL=1 PACKAGES="$both" "$ROOT/bin/omarchy-mac-kernel" --select linux-aurora >/dev/null 2>&1; then
++  fail "explicit selection still requires the package database"
++fi
++if PACKAGES="$both" "$ROOT/bin/omarchy-mac-kernel" --select linux-aurora extra >/dev/null 2>&1; then
++  fail "unexpected selection arguments are refused"
++fi
++pass "explicit kernel selection is read-only and requires the exact installed package"
++
++# On a running J773g research kernel, keep Aurora installed without ambiguity.
++cat >"$tmp/uname" <<'SH'
++#!/bin/bash
++printf '%s\n' "${TEST_UNAME:-other}"
++SH
++chmod +x "$tmp/uname"
++release=7.2.11-elementary-aurora72-wip5-m4-ARCH
++mkdir -p "$tmp/modules/$release"
++printf '%s\n' linux-omarchy-m4-wip5 >"$tmp/modules/$release/pkgbase"
++export OMARCHY_M4_MODULES_ROOT="$tmp/modules"
++printf 'apple,j773g\0apple,t8132\0' >"$tmp/compatible"
++[[ $(PACKAGES="$both" TEST_UNAME="$release" OMARCHY_M4_COMPATIBLE_FILE="$tmp/compatible" "$ROOT/bin/omarchy-mac-kernel") == linux-omarchy-m4-wip5 ]] ||
++  fail "a running M4 research kernel is selected with Aurora installed"
++printf 'apple,j314\0' >"$tmp/compatible"
++if PACKAGES="$both" TEST_UNAME="$release" OMARCHY_M4_COMPATIBLE_FILE="$tmp/compatible" "$ROOT/bin/omarchy-mac-kernel" >/dev/null 2>&1; then
++  fail "a non-M4 device cannot select the research kernel automatically"
++fi
++printf 'apple,j773g\0' >"$tmp/compatible"
++printf '%s\n' linux-aurora >"$tmp/modules/$release/pkgbase"
++if PACKAGES="$both" TEST_UNAME="$release" OMARCHY_M4_COMPATIBLE_FILE="$tmp/compatible" "$ROOT/bin/omarchy-mac-kernel" >/dev/null 2>&1; then
++  fail "another running kernel cannot select the M4 WIP5 package"
++fi
++pass "running M4 research kernel selection is limited to J773g"
+diff --git a/test/mac-m4-aurora-hook-test.sh b/test/mac-m4-aurora-hook-test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..39c8573ca754d916fb711878da64a6e10c6e13e8
+--- /dev/null
++++ b/test/mac-m4-aurora-hook-test.sh
+@@ -0,0 +1,34 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++mkdir "$tmp/bin"
++release=7.2.11-elementary-aurora72-wip5-m4-ARCH
++mkdir -p "$tmp/root/usr/lib/modules/$release"
++printf '%s\n' linux-omarchy-m4-wip5 >"$tmp/root/usr/lib/modules/$release/pkgbase"
++export _optmoduleroot="$tmp/root"
++cat >"$tmp/bin/modinfo" <<'STUB'
++#!/bin/sh
++[ "${TEST_RADIO_PRESENT:-0}" = 1 ]
++STUB
++chmod +x "$tmp/bin/modinfo"
++cat >"$tmp/aurora-hook" <<'STUB'
++build() {
++  add_module aop
++  add_module mt7932-fullmac
++}
++STUB
++export PATH="$tmp/bin:$PATH" OMARCHY_AURORA_HOOK_FILE="$tmp/aurora-hook"
++hook=$ROOT/files/etc/initcpio/install/aurora-vendor-order
++run() (
++  KERNELVERSION=$1 TEST_RADIO_PRESENT=$2
++  export KERNELVERSION TEST_RADIO_PRESENT
++  add_module() { printf '%s\n' "$1"; }
++  source "$hook"
++  build
++)
++[[ $(run "$release" 0 2>/dev/null) == aop ]] || fail 'M4 skips the absent Neo-only radio'
++[[ $(run "$release" 1) == $'aop\nmt7932-fullmac' ]] || fail 'M4 includes the radio if its kernel has it'
++[[ $(run 7.2.11-aurora-ARCH 0) == $'aop\nmt7932-fullmac' ]] || fail 'Aurora uses its original hook'
++pass 'M4 retains Aurora firmware ordering without requiring the Neo radio'
+diff --git a/test/mac-m4-bind-esp-test.sh b/test/mac-m4-bind-esp-test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..08c54f33b7906eb856667e16d38312e78c5c3213
+--- /dev/null
++++ b/test/mac-m4-bind-esp-test.sh
+@@ -0,0 +1,39 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++mkdir -p "$tmp/bin" "$tmp/chosen"
++release=7.2.11-elementary-aurora72-wip5-m4-ARCH
++mkdir -p "$tmp/modules/$release"
++printf '%s\n' linux-omarchy-m4-wip5 >"$tmp/modules/$release/pkgbase"
++cat >"$tmp/bin/uname" <<'STUB'
++#!/bin/sh
++printf '%s\n' 7.2.11-elementary-aurora72-wip5-m4-ARCH
++STUB
++chmod +x "$tmp/bin/uname"
++export PATH="$tmp/bin:$PATH" OMARCHY_M4_COMPATIBLE_FILE="$tmp/compatible" OMARCHY_M4_CHOSEN_DIR="$tmp/chosen"
++export OMARCHY_M4_CONFIG_FILE="$tmp/m1n1.conf" OMARCHY_M4_VENDORFW_HELPER="$ROOT/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh"
++export OMARCHY_M4_MODULES_ROOT="$tmp/modules"
++printf 'apple,j773g\0apple,t8132\0' >"$tmp/compatible"
++uuid=22345678-1234-1234-1234-123456789abc
++printf '%s\0' "$uuid" >"$tmp/chosen/asahi,efi-system-partition"
++printf '%s\0' "$uuid" >"$tmp/chosen/gravity,efi-system-partition"
++printf '# retained comment\n' >"$tmp/m1n1.conf"
++"$ROOT/files/usr/lib/omarchy-mac/boot/m4-bind-esp"
++expected=$(printf 'chosen.gravity,efi-system-partition=%s\nchosen.asahi,efi-system-partition=%s\n' "$uuid" "$uuid")
++[[ $(grep '^chosen\.' "$tmp/m1n1.conf") == "$expected" ]] || fail 'binds both ESP identifiers in stage-two order'
++cp "$tmp/m1n1.conf" "$tmp/before"
++"$ROOT/files/usr/lib/omarchy-mac/boot/m4-bind-esp"
++cmp -s "$tmp/m1n1.conf" "$tmp/before" || fail 'binding is idempotent'
++printf '%s\n' linux-aurora >"$tmp/modules/$release/pkgbase"
++"$ROOT/files/usr/lib/omarchy-mac/boot/m4-bind-esp"
++cmp -s "$tmp/m1n1.conf" "$tmp/before" || fail 'another running kernel must not change M4 boot options'
++printf '%s\n' linux-omarchy-m4-wip5 >"$tmp/modules/$release/pkgbase"
++printf 'display=other\n' >>"$tmp/m1n1.conf"
++cp "$tmp/m1n1.conf" "$tmp/before"
++if "$ROOT/files/usr/lib/omarchy-mac/boot/m4-bind-esp" 2>/dev/null; then fail 'existing unrelated m1n1 options are refused'; fi
++cmp -s "$tmp/m1n1.conf" "$tmp/before" || fail 'conflicting configuration is unchanged'
++printf '32345678-1234-1234-1234-123456789abc\0' >"$tmp/chosen/asahi,efi-system-partition"
++if "$ROOT/files/usr/lib/omarchy-mac/boot/m4-bind-esp" 2>/dev/null; then fail 'conflicting booted ESP identifiers are refused'; fi
++pass 'fresh M4 boot binds matching ESP identifiers without overwriting other options'
+diff --git a/test/mac-m4-initramfs-test.sh b/test/mac-m4-initramfs-test.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaa972a0ade9d49812fd005f817dca9115797225
+--- /dev/null
++++ b/test/mac-m4-initramfs-test.sh
+@@ -0,0 +1,57 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++conf=$ROOT/files/etc/mkinitcpio.conf.d/95-omarchy-mac-m4-wip5.conf
++repo=$(cd -- "$ROOT/../../.." && pwd)
++preset=${OMARCHY_M4_PRESET:-$repo/m4-mini/arch-wip5/linux-omarchy-m4-wip5.preset}
++kver=7.2.11-elementary-aurora72-wip5-m4-ARCH
++rootfix_kver=7.2.11-elementary-aurora72-wip5-m4alt-ARCH
++mkdir -p "$tmp/bin" "$tmp/root/lib/modules/$kver" "$tmp/root/lib/modules/$rootfix_kver" "$tmp/info"
++printf 'linux-omarchy-m4-wip5\n' >"$tmp/root/lib/modules/$kver/pkgbase"
++printf 'linux-omarchy-m4-wip5\n' >"$tmp/root/lib/modules/$rootfix_kver/pkgbase"
++cat >"$tmp/bin/modinfo" <<'SH'
++#!/bin/bash
++[[ $1 == -b && $2 == "$TEST_MODULE_ROOT" && $3 == -k && $4 == "$TEST_KERNEL" && $5 == -F && $6 == filename ]] || exit 2
++[[ -f $TEST_MODINFO/$7 ]] || exit 1
++cat "$TEST_MODINFO/$7"
++SH
++chmod +x "$tmp/bin/modinfo"
++printf '/lib/modules/%s/kernel/drivers/nvme/host/nvme-apple.ko\n' "$kver" >"$tmp/info/nvme-apple"
++printf '(builtin)\n' >"$tmp/info/apple-mailbox"
++printf '(builtin)\n' >"$tmp/info/apple-dart"
++printf '(builtin)\n' >"$tmp/info/btrfs"
++printf '(builtin)\n' >"$tmp/info/appledrm"
++printf '(builtin)\n' >"$tmp/info/asahi"
++printf '(builtin)\n' >"$tmp/info/phy-apple-dptx"
++
++run_conf() {
++  PATH="$tmp/bin:$PATH" TEST_MODULE_ROOT="$tmp/root" TEST_KERNEL="${1:-$kver}" TEST_MODINFO="$tmp/info" \
++    KERNELVERSION="${1:-$kver}" bash -c '
++      set -u
++      _optmoduleroot=$1
++      MODULES=(btrfs)
++      source "$2" || exit 1
++      printf "%s\n" "${MODULES[*]}"
++    ' bash "$tmp/root" "$conf"
++}
++[[ $(run_conf) == "btrfs nvme-apple" ]] || fail "M4 adds Apple NVMe and skips built-in mailbox and DART"
++[[ $(run_conf "$rootfix_kver") == "btrfs nvme-apple" ]] || fail "the distinct encrypted-root release gets the M4 storage modules"
++[[ $(run_conf 6.17.0-aurora1-ARCH) == "btrfs" ]] || fail "other kernels are not changed"
++rm "$tmp/info/nvme-apple"
++if run_conf >/dev/null 2>&1; then fail "missing M4 NVMe is refused"; fi
++printf '(builtin)\n' >"$tmp/info/nvme-apple"
++[[ $(run_conf) == "btrfs" ]] || fail "built-in M4 NVMe does not become a module entry"
++printf 'linux-aurora\n' >"$tmp/root/lib/modules/$kver/pkgbase"
++if run_conf >/dev/null 2>&1; then fail "a different package identity is refused"; fi
++pass "M4 storage selection is target-scoped, supports built-ins and refuses missing drivers"
++
++source "$preset"
++[[ ${PRESETS[*]} == "default fallback" ]] || fail "both initramfs images are enabled"
++[[ $ALL_kver == "/boot/vmlinuz-linux-omarchy-m4-wip5" ]] || fail "the preset names the copied research kernel"
++[[ $default_image == "/boot/initramfs-linux-omarchy-m4-wip5.img" &&
++   $fallback_image == "/boot/initramfs-linux-omarchy-m4-wip5-fallback.img" &&
++   $fallback_options == "-S autodetect" ]] || fail "fallback keeps a distinct image and skips autodetection"
++pass "the M4 preset builds separate default and fallback initramfs images"
+diff --git a/test/mac-m4-package-guard-test.sh b/test/mac-m4-package-guard-test.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..b3ff603b4785b7a7b1a15e6061403588c77a39b8
+--- /dev/null
++++ b/test/mac-m4-package-guard-test.sh
+@@ -0,0 +1,41 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++"$ROOT/install" "$tmp/staged"
++hook="$tmp/staged/usr/share/libalpm/hooks/05-omarchy-mac-m4-wip5-guard.hook"
++guard="$tmp/staged/usr/lib/omarchy-mac/boot/m4-wip5-transaction-guard"
++coexistence_hook="$tmp/staged/usr/share/libalpm/hooks/06-omarchy-mac-m4-coexistence-guard.hook"
++coexistence_guard="$tmp/staged/usr/lib/omarchy-mac/boot/m4-coexistence-guard"
++[[ -f $hook && -x $guard && -f $coexistence_hook && -x $coexistence_guard ]] ||
++  fail "the M4 transaction hooks and executable guards are staged"
++if "$guard" >"$tmp/out" 2>&1; then
++  fail "the unqualified research transaction is refused"
++fi
++grep -Fq 'installation, upgrade and removal are not qualified' "$tmp/out" || fail "the guard explains the refusal"
++mkdir "$tmp/bin"
++cat >"$tmp/bin/pacman" <<'SH'
++#!/bin/sh
++[ "$1" = -Qq ] || exit 2
++[ "${TEST_PACMAN_FAIL:-0}" = 0 ] || exit 1
++printf '%s\n' "$TEST_PACKAGES"
++SH
++chmod +x "$tmp/bin/pacman"
++TEST_PACKAGES=$'linux-aurora\nm1n1-aurora' PATH="$tmp/bin:$PATH" "$coexistence_guard" ||
++  fail "normal Apple kernel and loader transactions remain allowed"
++for name in linux-omarchy-m4-wip5 m1n1-omarchy-m4-wip5; do
++  if TEST_PACKAGES=$'linux-aurora\n'"$name" PATH="$tmp/bin:$PATH" "$coexistence_guard" >"$tmp/out" 2>&1; then
++    fail "an m1n1-triggering transaction is refused when $name is installed"
++  fi
++done
++if TEST_PACKAGES='' TEST_PACMAN_FAIL=1 PATH="$tmp/bin:$PATH" "$coexistence_guard" >"$tmp/out" 2>&1; then
++  fail "an unreadable package database is refused"
++fi
++printf '#!/bin/sh\nexit 2\n' >"$tmp/bin/grep"
++chmod +x "$tmp/bin/grep"
++if TEST_PACKAGES=linux-aurora PATH="$tmp/bin:$PATH" "$coexistence_guard" >"$tmp/out" 2>&1; then
++  fail "an error while examining packages is refused"
++fi
++pass "the M4 guards refuse research packages and unsafe coexistence transactions"
+diff --git a/test/mac-m4-stage2-check-test.sh b/test/mac-m4-stage2-check-test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..05cd1f2534f754837d0896fdb97c702d26ad32fb
+--- /dev/null
++++ b/test/mac-m4-stage2-check-test.sh
+@@ -0,0 +1,20 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++python3 - "$tmp" <<'PY'
++import gzip,sys
++from pathlib import Path
++p=Path(sys.argv[1]);loader=b'm1n1';dtb=b'device-tree';uboot=b'uboot'*500;options=b'chosen.gravity,efi-system-partition=test\n'
++for name,data in [('loader',loader),('dtb',dtb),('uboot',uboot),('options',options)]: (p/name).write_bytes(data)
++(p/'stage2').write_bytes(loader+dtb+gzip.compress(uboot,mtime=0)+options)
++(p/'wrong').write_bytes(loader+dtb+gzip.compress(uboot+b'bad',mtime=0)+options)
++(p/'extra').write_bytes(loader+dtb+gzip.compress(uboot,mtime=1)+options+b'extra')
++PY
++check=$ROOT/bin/omarchy-mac-m4-stage2-check
++"$check" "$tmp/stage2" "$tmp/loader" "$tmp/dtb" "$tmp/uboot" "$tmp/options" || fail 'equivalent gzip stage two passes'
++for bad in wrong extra; do
++  if "$check" "$tmp/$bad" "$tmp/loader" "$tmp/dtb" "$tmp/uboot" "$tmp/options"; then fail 'different U-Boot or trailing options are refused'; fi
++done
++pass 'M4 stage-two check verifies every component independent of gzip headers'
+diff --git a/test/mac-vendorfw-device-test.sh b/test/mac-vendorfw-device-test.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..db07226a1d2165f9f28e035740e754db3cb40b0f
+--- /dev/null
++++ b/test/mac-vendorfw-device-test.sh
+@@ -0,0 +1,33 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++selector=$ROOT/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++mkdir -p "$tmp/disk/by-partuuid" "$tmp/disk/by-uuid" "$tmp/bin"
++cat >"$tmp/bin/blkid" <<'SH'
++#!/bin/sh
++printf 'called\n' >> "$TEST_CALLS"
++[ "$1" = -U ] && [ "$2" = 4F4D-5801 ] || exit 1
++printf '/dev/test-esp\n'
++SH
++chmod +x "$tmp/bin/blkid"
++export PATH="$tmp/bin:$PATH" TEST_CALLS="$tmp/calls"
++source "$selector"
++touch "$tmp/disk/by-partuuid/abcdef01-2222" "$tmp/disk/by-uuid/4F4D-5801"
++[[ $(omarchy_vendorfw_device "$tmp/disk" ABCDEF01-2222 4F4D-5801) == "$tmp/disk/by-partuuid/abcdef01-2222" ]] ||
++  fail "m1n1's chosen ESP takes priority over the image UUID"
++[[ ! -e $tmp/calls ]] || fail "the selector did not query the unrelated image UUID"
++rm "$tmp/disk/by-partuuid/abcdef01-2222"
++if omarchy_vendorfw_device "$tmp/disk" abcdef01-2222 4F4D-5801 >/dev/null; then
++  fail "a missing chosen ESP must not fall back to a different installation"
++fi
++if omarchy_vendorfw_device "$tmp/disk" '../other' 4F4D-5801 >/dev/null; then
++  fail "an invalid PARTUUID is rejected"
++fi
++[[ $(omarchy_vendorfw_device "$tmp/disk" '' 4F4D-5801) == "$tmp/disk/by-uuid/4F4D-5801" ]] ||
++  fail "the image UUID is used when m1n1 did not supply a PARTUUID"
++rm "$tmp/disk/by-uuid/4F4D-5801"
++[[ $(omarchy_vendorfw_device "$tmp/disk" '' 4F4D-5801) == "/dev/test-esp" ]] ||
++  fail "blkid remains a fallback when the image UUID symlink is missing"
++pass "vendor firmware follows the chosen ESP and never falls back to another OS when it is missing"
+diff --git a/test/mac-vendorfw-runtime-test.sh b/test/mac-vendorfw-runtime-test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..768fdaa3db5bf28f42d543bb6720d8c01cd27ea4
+--- /dev/null
++++ b/test/mac-vendorfw-runtime-test.sh
+@@ -0,0 +1,106 @@
++#!/bin/bash
++set -euo pipefail
++source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
++
++if [[ ${M4_DISPOSABLE_CHROOT_TEST:-0} != 1 ]]; then
++  pass "vendor firmware chroot runtime test skipped (opt in only on a disposable Linux VM)"
++  exit 0
++fi
++require_command busybox
++require_command sudo
++require_command ldd
++sudo -n true || fail "passwordless sudo is required in the disposable test VM"
++tmp=$(mktemp -d)
++trap 'sudo rm -rf "$tmp"' EXIT
++root=$tmp/root
++mkdir -p "$root/bin" "$root/usr/bin" "$root/usr/lib/omarchy/initcpio" "$root/test/bin" \
++  "$root/proc/device-tree/chosen" "$root/dev/disk/by-partuuid" "$root/dev/disk/by-uuid" \
++  "$root/fixture/esp/vendorfw" "$root/fixture/source/vendorfw/apple" "$root/run" "$root/lib/firmware"
++cp "$(command -v busybox)" "$root/bin/busybox"
++(ldd "$(command -v busybox)" 2>&1 || true) | grep -Fq 'not a dynamic executable' || fail "the fixture needs a static busybox"
++cp -L /bin/sh "$root/bin/sh"
++while IFS= read -r library; do
++  mkdir -p "$root$(dirname "$library")"
++  cp -L "$library" "$root$library"
++done < <(ldd /bin/sh | awk '/=> \/[^ ]+/ { print $3 } $1 ~ /^\// { print $1 }')
++for name in tr cp mkdir sleep cpio cat ln; do ln -s busybox "$root/bin/$name"; done
++ln -s /bin/sh "$root/usr/bin/sh"
++cp "$ROOT/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh" "$root/usr/lib/omarchy/initcpio/"
++cp "$ROOT/files/usr/lib/omarchy/initcpio/omarchy-vendorfw-device.sh" "$root/usr/lib/omarchy/initcpio/"
++printf 'test firmware\n' >"$root/fixture/source/vendorfw/apple/firmware.bin"
++(cd "$root/fixture/source" && find . -print | busybox cpio -o -H newc >"$root/fixture/esp/vendorfw/firmware.cpio" 2>/dev/null)
++cat >"$root/test/bin/mount" <<'SH'
++#!/bin/sh
++printf 'mount %s\n' "$*" >>/test/calls
++[ ! -e /test/fail-mount ] || exit 1
++last=
++for last; do :; done
++case " $* " in *' -t tmpfs '*) exit 0 ;; esac
++cp -r /fixture/esp/. "$last"/
++SH
++cat >"$root/test/bin/umount" <<'SH'
++#!/bin/sh
++printf 'umount %s\n' "$*" >>/test/calls
++SH
++cat >"$root/test/bin/sleep" <<'SH'
++#!/bin/sh
++exit 0
++SH
++chmod +x "$root/test/bin/"*
++printf 'abcdef01-2222\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
++touch "$root/dev/disk/by-partuuid/abcdef01-2222" "$root/dev/disk/by-uuid/4F4D-5801"
++
++run_helper() {
++  sudo chroot "$root" /bin/sh -c 'PATH=/test/bin:/bin /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh' \
++    >"$tmp/out" 2>"$tmp/err"
++}
++reset_helper() {
++  sudo rm -rf "$root/run/omarchy-vendorfw-esp" "$root/run/omarchy-vendorfw-extract"
++  sudo rm -f "$root/run/omarchy-vendorfw-initrd.staged" "$root/run/omarchy-vendorfw-initrd.status" "$root/test/calls"
++}
++
++run_helper || fail "the isolated early firmware helper runs"
++grep -Fq 'mount -o ro /dev/disk/by-partuuid/abcdef01-2222 ' "$root/test/calls" || fail "chosen ESP is mounted"
++[[ $(cat "$root/vendorfw/apple/firmware.bin") == 'test firmware' ]] || fail "firmware was copied"
++grep -Fq 'umount /run/omarchy-vendorfw-extract' "$root/test/calls" || fail "firmware tmpfs was cleaned up"
++
++reset_helper
++mv "$root/proc/device-tree/chosen/asahi,efi-system-partition" "$root/proc/device-tree/chosen/gravity,efi-system-partition"
++run_helper || fail "the Gravity-only ESP is handled"
++grep -Fq 'mount -o ro /dev/disk/by-partuuid/abcdef01-2222 ' "$root/test/calls" || fail "Gravity's chosen ESP is mounted"
++
++reset_helper
++printf '12345678-0001\0' >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
++run_helper || fail "conflicting ESP identifiers do not block the prompt"
++[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "conflicting ESP identifiers are recorded"
++[[ ! -e $root/test/calls ]] || fail "conflicting identifiers do not mount firmware"
++rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
++mv "$root/proc/device-tree/chosen/gravity,efi-system-partition" "$root/proc/device-tree/chosen/asahi,efi-system-partition"
++
++reset_helper
++rm "$root/dev/disk/by-partuuid/abcdef01-2222"
++run_helper || fail "a missing chosen ESP does not fail the helper"
++[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "missing chosen ESP is recorded"
++[[ ! -e $root/test/calls ]] || fail "the helper did not mount the other image ESP"
++
++reset_helper
++: >"$root/proc/device-tree/chosen/asahi,efi-system-partition"
++run_helper || fail "an empty chosen ESP does not fail the helper"
++[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "empty chosen ESP is recorded"
++[[ ! -e $root/test/calls ]] || fail "an empty chosen ESP does not fall back to the image ESP"
++
++reset_helper
++rm "$root/proc/device-tree/chosen/asahi,efi-system-partition"
++touch "$root/test/fail-mount"
++run_helper || fail "a mount failure does not block the prompt"
++[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "mount failure is recorded"
++[[ ! -e $root/run/omarchy-vendorfw-initrd.staged ]] || fail "failed mount is not reported as staged"
++
++reset_helper
++rm "$root/test/fail-mount"
++printf 'invalid archive\n' >"$root/fixture/esp/vendorfw/firmware.cpio"
++run_helper || fail "a corrupt firmware archive does not block the prompt"
++[[ $(cat "$root/run/omarchy-vendorfw-initrd.status") == missing ]] || fail "corrupt archive is recorded"
++grep -Fq 'umount /run/omarchy-vendorfw-esp' "$root/test/calls" &&
++  grep -Fq 'umount /run/omarchy-vendorfw-extract' "$root/test/calls" || fail "failed extraction cleans up both mounts"
++pass "early firmware runtime chooses the booted ESP and handles missing, unmountable and corrupt inputs"
