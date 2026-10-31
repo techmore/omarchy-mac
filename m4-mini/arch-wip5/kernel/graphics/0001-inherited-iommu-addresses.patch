@@ -1,0 +1,65 @@
+From 3d698155a10dd91f6d69e82839ea0f5a441822fc Mon Sep 17 00:00:00 2001
+From: Eryk Wieliczko <eryk@wieliczko.ninja>
+Date: Tue, 20 Oct 2026 23:05:29 +0200
+Subject: [PATCH 01/13] of: validate each inherited IOMMU address tuple
+
+Reject malformed mixed-provider tuple geometry before reserving inherited
+device addresses.
+
+Generated-by: Codex
+Assisted-by: Codex:GPT-6
+Signed-off-by: Eryk Wieliczko <eryk@wieliczko.ninja>
+---
+ drivers/of/address.c       | 25 +++++++++++++++++++++++++
+ include/linux/of_address.h |  1 +
+ 2 files changed, 26 insertions(+)
+
+diff --git a/drivers/of/address.c b/drivers/of/address.c
+index b496ad3ecb7c8b..ee8ca2cd507b7a 100644
+--- a/drivers/of/address.c
++++ b/drivers/of/address.c
+@@ -645,6 +645,31 @@ u64 of_translate_dma_address(struct device_node *dev, const __be32 *in_addr)
+ }
+ EXPORT_SYMBOL(of_translate_dma_address);
+ 
++/**
++ * of_dma_region_cells - cell count of a device's DMA address and size tuple
++ * @dev: device tree node naming the DMA address space
++ *
++ * Use the DMA parent, which may differ from the structural parent when a
++ * dma-mem interconnect is present. This permits callers to bound or skip a
++ * tuple without translating another device's address space.
++ *
++ * Return: a positive cell count, or a negative error for an invalid parent.
++ */
++int of_dma_region_cells(struct device_node *dev)
++{
++	struct device_node *parent __free(device_node) = __of_get_dma_parent(dev);
++	int na, ns, cells;
++
++	if (!parent)
++		return -EINVAL;
++	na = of_bus_n_addr_cells(parent);
++	ns = of_bus_n_size_cells(parent);
++	if (!OF_CHECK_COUNTS(na, ns) || check_add_overflow(na, ns, &cells))
++		return -EINVAL;
++	return cells;
++}
++EXPORT_SYMBOL(of_dma_region_cells);
++
+ static const __be32 *__of_translate_dma_region(struct device_node *dev,
+ 					       const __be32 *prop, size_t cells,
+ 					       phys_addr_t *start, size_t *length)
+diff --git a/include/linux/of_address.h b/include/linux/of_address.h
+index c5cec2b7698e27..be8dca3b74d2d4 100644
+--- a/include/linux/of_address.h
++++ b/include/linux/of_address.h
+@@ -55,6 +55,7 @@ static inline int of_range_count(const struct of_range_parser *parser)
+ /* Translate a DMA address from device space to CPU space */
+ extern u64 of_translate_dma_address(struct device_node *dev,
+ 				    const __be32 *in_addr);
++extern int of_dma_region_cells(struct device_node *dev);
+ extern const __be32 *of_translate_dma_region(struct device_node *dev, const __be32 *addr,
+ 					     phys_addr_t *start, size_t *length);
+ const __be32 *of_translate_dma_region_checked(struct device_node *dev,
+

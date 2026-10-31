@@ -1,0 +1,103 @@
+From 811896522ef94b1b7f4de07c87023b89cab368e5 Mon Sep 17 00:00:00 2001
+From: Eryk Wieliczko <eryk@wieliczko.ninja>
+Date: Tue, 20 Oct 2026 23:05:29 +0200
+Subject: [PATCH 02/13] rust: expose fence and DRM lifecycle helpers for native
+ GPU backends
+
+Provide fence-signalling guards and bound-device event delivery for native
+GPU backends. Reuse the existing sanitized arm64 feature API and DMA
+mappings; no private architecture cache exports are needed.
+
+Generated-by: Codex
+Assisted-by: Codex:GPT-6
+Signed-off-by: Eryk Wieliczko <eryk@wieliczko.ninja>
+---
+ rust/kernel/dma_fence.rs  | 42 +++++++++++++++++++++++++++++++++++++++
+ rust/kernel/drm/device.rs | 20 +++++++++++++++++++
+ 2 files changed, 62 insertions(+)
+
+diff --git a/rust/kernel/dma_fence.rs b/rust/kernel/dma_fence.rs
+index 3aa90c1568d5e3..dedde2166cdb4a 100644
+--- a/rust/kernel/dma_fence.rs
++++ b/rust/kernel/dma_fence.rs
+@@ -14,6 +14,48 @@ use core::ops::{Deref, DerefMut};
+ use core::ptr::addr_of_mut;
+ use core::sync::atomic::{AtomicU64, Ordering};
+ 
++/// A lockdep annotation for code required to complete a published DMA fence.
++///
++/// Keep this guard alive across all locks and operations on the mandatory signalling
++/// path, including deferred completion, and drop it before unrelated reclaiming work.
++/// The guard may nest but must be dropped by the task that created it.
++#[must_use]
++pub struct SignallingGuard {
++    #[cfg(CONFIG_LOCKDEP)]
++    cookie: bool,
++    // The lockdep cookie belongs to the current task, so this guard is !Send and !Sync.
++    _not_send_sync: core::marker::PhantomData<*mut ()>,
++}
++
++impl SignallingGuard {
++    /// Begins a DMA fence signalling critical section for lockdep.
++    pub fn new() -> Self {
++        Self {
++            // SAFETY: This annotation has no preconditions and supports nesting and
++            // atomic context. Drop closes it on the same task using its returned cookie.
++            #[cfg(CONFIG_LOCKDEP)]
++            cookie: unsafe { bindings::dma_fence_begin_signalling() },
++            _not_send_sync: core::marker::PhantomData,
++        }
++    }
++}
++
++impl Default for SignallingGuard {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl Drop for SignallingGuard {
++    fn drop(&mut self) {
++        // SAFETY: The non-transferable guard owns this task's matching begin cookie.
++        #[cfg(CONFIG_LOCKDEP)]
++        unsafe {
++            bindings::dma_fence_end_signalling(self.cookie)
++        };
++    }
++}
++
+ mod private {
+     /// Marker that a trait cannot be implemented outside of this mod
+     pub trait Sealed {}
+diff --git a/rust/kernel/drm/device.rs b/rust/kernel/drm/device.rs
+index 4d6674f2450492..06c2d93200fbd9 100644
+--- a/rust/kernel/drm/device.rs
++++ b/rust/kernel/drm/device.rs
+@@ -300,6 +300,26 @@ impl<T: drm::Driver, C: DeviceContext> Device<T, C> {
+         self.dev.get()
+     }
+ 
++    /// Reports that device execution is unavailable and the recovery method is unknown.
++    ///
++    /// May sleep: call in task context outside fence signalling and driver locks.
++    /// A registration guard keeps the parent bound throughout event delivery; a device
++    /// still being probed or already unplugged cannot deliver the event.
++    pub fn report_wedged(&self) -> Result {
++        // SAFETY: Every device context satisfies the weaker Normal context invariants.
++        let normal = unsafe { self.assume_ctx::<Normal>() };
++        let _registration = normal.registration_guard().ok_or(ENODEV)?;
++        let raw = self.as_raw();
++        // SAFETY: The referenced device and its registered primary node remain live under
++        // the registration guard. A probe failure has already been rejected above.
++        if unsafe { (*raw).primary.is_null() } {
++            return Err(ENODEV);
++        }
++        // SAFETY: The device/node are live, 0 asks DRM to report an unknown recovery method,
++        // and a NULL task means no userspace task is attributed as guilty.
++        crate::error::to_result(unsafe { bindings::drm_dev_wedged_event(raw, 0, ptr::null_mut()) })
++    }
++
+     /// # Safety
+     ///
+     /// `ptr` must be a valid pointer to a `struct device` embedded in `Self`.
+

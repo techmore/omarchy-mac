@@ -35,6 +35,10 @@ Gravity and macOS/Recovery paths remain available. No WIP5 stage-one,
 stage-two, kernel or image hashes have been authorized by this draft. In
 particular, do not reuse the old Gravity image adapter's pinned hashes.
 
+The accompanying [kernel source series](kernel/README.md) pins the WIP5 base,
+the mini agent's current J773g changes and the first M4 Air graphics
+prerequisites. It is not a complete GPU or HDMI port.
+
 To prepare the boot source without installing it:
 
 ```sh

@@ -1,0 +1,587 @@
+From bb0352ffa7d61b62dec281cfd88a59de2fe13493 Mon Sep 17 00:00:00 2001
+From: Eryk Wieliczko <eryk@wieliczko.ninja>
+Date: Sun, 18 Oct 2026 11:17:51 +0200
+Subject: [PATCH 17/27] soc: apple: pmp: publish owner-managed T8132 telemetry
+
+Extend the PMP registry/report contract and link read-only telemetry
+with the Rust firmware owner. Select CoreAnalytics before mailbox RX
+only for the qualified T8132/J713 instance; other firmware keeps its
+previous startup contract. Record consistency does not establish
+an advancing firmware temperature heartbeat.
+
+Source-commit: 27d77701c2d47b90597eab7c662c177e18e4a34a
+Source-commit: 85165a160e24c90fd4e046e56b66c59ef8aa752b
+Source-snapshot: 9ffa1fbed1e052d9706ad3e13c8663bc8ffe3d8d
+Assisted-by: LLM
+---
+ drivers/pmdomain/apple/pmp-report.c     |   9 +
+ drivers/soc/apple/Makefile              |   2 +-
+ drivers/soc/apple/pmp-telemetry.c       | 215 ++++++++++++++++++++++++
+ drivers/soc/apple/pmp.rs                |  78 ++++++++-
+ include/linux/soc/apple/pmp-telemetry.h |  32 ++++
+ include/linux/soc/apple/pmp-temps.h     |  15 +-
+ rust/bindings/bindings_helper.h         |   1 +
+ 7 files changed, 340 insertions(+), 12 deletions(-)
+ create mode 100644 drivers/soc/apple/pmp-telemetry.c
+ create mode 100644 include/linux/soc/apple/pmp-telemetry.h
+
+diff --git a/drivers/pmdomain/apple/pmp-report.c b/drivers/pmdomain/apple/pmp-report.c
+index beedc4d96eb7f9..cb1277fb3d71d9 100644
+--- a/drivers/pmdomain/apple/pmp-report.c
++++ b/drivers/pmdomain/apple/pmp-report.c
+@@ -1125,6 +1125,14 @@ static const struct apple_pmp_report_offsets apple_pmp_offsets_t8140 = {
+ 	.fast_die_lanes = 2,
+ };
+ 
++static const struct apple_pmp_report_offsets apple_pmp_offsets_t8132 = {
++	.tgt_read = 0x1880,
++	.tgt_write = 0x10c40,
++	.actual = 0x1900,
++	.status = 0x10,
++	/* No qualified fast-die effort on this generation. */
++};
++
+ static const struct of_device_id apple_pmp_report_of_match[] = {
+ 	{ .compatible = "apple,j613-25g83-pmp-report", .data = &apple_pmp_offsets_j613_25g83 },
+ 	{ .compatible = "apple,t6000-pmp-v2-report", .data = &apple_pmp_offsets_t600x },
+@@ -1133,6 +1141,7 @@ static const struct of_device_id apple_pmp_report_of_match[] = {
+ 	{ .compatible = "apple,t6031-pmp-v2-report", .data = &apple_pmp_offsets_t6031 },
+ 	{ .compatible = "apple,t8112-pmp-v2-report", .data = &apple_pmp_offsets_t8112 },
+ 	{ .compatible = "apple,t8122-pmp-v2-report", .data = &apple_pmp_offsets_t8122 },
++	{ .compatible = "apple,t8132-pmp-v2-report", .data = &apple_pmp_offsets_t8132 },
+ 	{ .compatible = "apple,t8140-pmp-v2-report", .data = &apple_pmp_offsets_t8140 },
+ 	{}
+ };
+diff --git a/drivers/soc/apple/Makefile b/drivers/soc/apple/Makefile
+index 10d52840245eeb..19090976481fc6 100644
+--- a/drivers/soc/apple/Makefile
++++ b/drivers/soc/apple/Makefile
+@@ -45,7 +45,7 @@ apple-sep-y := sep.o hwrng_shim.o store_shim.o bio_shim.o sha_shim.o \
+ 		pm_shim.o diag_shim.o
+ 
+ obj-$(CONFIG_APPLE_PMP) += apple-pmp.o
+-apple-pmp-y := pmp.o pmp-export.o
++apple-pmp-y := pmp.o pmp-export.o pmp-telemetry.o
+ 
+ obj-$(CONFIG_APPLE_MCC) += apple-mcc.o
+ apple-mcc-y := mcc.o
+diff --git a/drivers/soc/apple/pmp-telemetry.c b/drivers/soc/apple/pmp-telemetry.c
+new file mode 100644
+index 00000000000000..5979d19faf3c4c
+--- /dev/null
++++ b/drivers/soc/apple/pmp-telemetry.c
+@@ -0,0 +1,215 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/* Read-only sensors supplied by the existing PMP firmware owner. */
++#include <linux/device.h>
++#include <linux/hwmon.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/mutex.h>
++#include <linux/module.h>
++#include <linux/rculist.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/soc/apple/pmp-telemetry.h>
++#include <linux/soc/apple/pmp-temps.h>
++
++bool apple_pmp_telemetry_retained_board(void)
++{
++	return of_machine_is_compatible("apple,j713") &&
++	       of_machine_is_compatible("apple,t8132");
++}
++
++static LIST_HEAD(apple_pmp_telemetry_list);
++static DEFINE_MUTEX(apple_pmp_telemetry_lock);
++
++struct apple_pmp_telemetry {
++	struct device *dev;
++	struct list_head list;
++	void __iomem *sram;
++	void __iomem *asc;
++	bool online;
++};
++
++static bool apple_pmp_telemetry_online(const struct apple_pmp_telemetry *sensors)
++{
++	return READ_ONCE(sensors->online) &&
++	       (readl(sensors->asc + 0x44) & BIT(4));
++}
++
++int apple_pmp_telemetry_get_hotspot(const struct device_node *np, long *value)
++{
++	struct apple_pmp_telemetry *sensors;
++	int ret = -EPROBE_DEFER;
++
++	if (!np || !value)
++		return -EINVAL;
++	rcu_read_lock();
++	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list) {
++		if (sensors->dev->of_node != np)
++			continue;
++		if (!apple_pmp_telemetry_online(sensors)) {
++			ret = -ENODEV;
++			break;
++		}
++		ret = apple_pmp_temp_hotspot(sensors->sram, value);
++		/* A crash concurrent with the snapshot invalidates the result. */
++		if (!apple_pmp_telemetry_online(sensors))
++			ret = -ENODEV;
++		break;
++	}
++	rcu_read_unlock();
++	return ret;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_telemetry_get_hotspot);
++
++static int apple_pmp_sensor_read(void *cookie, unsigned int channel,
++				 long *value)
++{
++	struct apple_pmp_telemetry *sensors = cookie;
++	int ret;
++
++	if (channel >= PMP_TEMP_CHANNELS)
++		return -EINVAL;
++	if (!apple_pmp_telemetry_online(sensors))
++		return -ENODEV;
++	ret = apple_pmp_temp_sample(sensors->sram, channel, value);
++
++	return apple_pmp_telemetry_online(sensors) ? ret : -ENODEV;
++}
++
++static umode_t apple_pmp_hwmon_visible(const void *data,
++				       enum hwmon_sensor_types type, u32 attr,
++				       int channel)
++{
++	return type == hwmon_temp && channel >= 0 &&
++			       channel < PMP_TEMP_CHANNELS &&
++			       (attr == hwmon_temp_input ||
++				attr == hwmon_temp_label) ?
++		       0444 :
++		       0;
++}
++
++static int apple_pmp_hwmon_read(struct device *dev,
++				enum hwmon_sensor_types type, u32 attr,
++				int channel, long *value)
++{
++	struct apple_pmp_telemetry *sensors = dev_get_drvdata(dev);
++
++	if (type != hwmon_temp || attr != hwmon_temp_input)
++		return -EOPNOTSUPP;
++	if (channel < 0 || channel >= PMP_TEMP_CHANNELS)
++		return -EINVAL;
++	/* Preserve the original ABI: aggregate first, then five named records.
++	 * The sixth firmware record still contributes to the aggregate.
++	 */
++	if (channel)
++		return apple_pmp_sensor_read(sensors, channel - 1, value);
++	return apple_pmp_telemetry_get_hotspot(sensors->dev->of_node, value);
++}
++
++static int apple_pmp_hwmon_label(struct device *dev,
++				 enum hwmon_sensor_types type, u32 attr,
++				 int channel, const char **label)
++{
++	if (type != hwmon_temp || attr != hwmon_temp_label || channel < 0 ||
++	    channel >= PMP_TEMP_CHANNELS)
++		return -EOPNOTSUPP;
++	*label = channel ? apple_pmp_temp_records[channel - 1].label :
++			   "PMP aggregate die hotspot";
++	return 0;
++}
++
++static const struct hwmon_ops apple_pmp_hwmon_ops = {
++	.is_visible = apple_pmp_hwmon_visible,
++	.read = apple_pmp_hwmon_read,
++	.read_string = apple_pmp_hwmon_label,
++};
++
++static const struct hwmon_channel_info *const apple_pmp_hwmon_info[] = {
++	HWMON_CHANNEL_INFO(
++		temp, HWMON_T_INPUT | HWMON_T_LABEL,
++		HWMON_T_INPUT | HWMON_T_LABEL, HWMON_T_INPUT | HWMON_T_LABEL,
++		HWMON_T_INPUT | HWMON_T_LABEL, HWMON_T_INPUT | HWMON_T_LABEL,
++		HWMON_T_INPUT | HWMON_T_LABEL),
++	NULL,
++};
++
++static const struct hwmon_chip_info apple_pmp_hwmon_chip = {
++	.ops = &apple_pmp_hwmon_ops,
++	.info = apple_pmp_hwmon_info,
++};
++
++static void apple_pmp_thermal_unregister(void *data)
++{
++	platform_device_unregister(data);
++}
++
++static void apple_pmp_telemetry_release(void *data)
++{
++	struct apple_pmp_telemetry *sensors = data;
++
++	mutex_lock(&apple_pmp_telemetry_lock);
++	if (!list_empty(&sensors->list))
++		list_del_rcu(&sensors->list);
++	mutex_unlock(&apple_pmp_telemetry_lock);
++	synchronize_rcu();
++}
++
++int apple_pmp_telemetry_register(struct device *dev, void __iomem *sram,
++				 size_t size, void __iomem *asc)
++{
++	struct apple_pmp_sensor_data data;
++	struct apple_pmp_telemetry *sensors;
++	struct platform_device *child;
++	struct device *hwmon;
++	int ret;
++
++	if (!of_device_is_compatible(dev->of_node, "apple,t8132-pmp-v2"))
++		return 0;
++	if (size < apple_pmp_temp_records[PMP_TEMP_CHANNELS - 1].offset +
++			   PMP_TEMP_RECORD_SIZE)
++		return -EINVAL;
++	sensors = devm_kzalloc(dev, sizeof(*sensors), GFP_KERNEL);
++	if (!sensors)
++		return -ENOMEM;
++	sensors->dev = dev;
++	INIT_LIST_HEAD(&sensors->list);
++	ret = devm_add_action_or_reset(dev, apple_pmp_telemetry_release,
++				       sensors);
++	if (ret)
++		return ret;
++	sensors->sram = sram;
++	sensors->asc = asc;
++	sensors->online = true;
++	mutex_lock(&apple_pmp_telemetry_lock);
++	list_add_tail_rcu(&sensors->list, &apple_pmp_telemetry_list);
++	mutex_unlock(&apple_pmp_telemetry_lock);
++	if (IS_REACHABLE(CONFIG_HWMON)) {
++		hwmon = devm_hwmon_device_register_with_info(
++			dev, "apple_pmp", sensors, &apple_pmp_hwmon_chip, NULL);
++		if (IS_ERR(hwmon))
++			return PTR_ERR(hwmon);
++	}
++	data.read = apple_pmp_sensor_read;
++	data.cookie = sensors;
++	child = platform_device_register_data(dev, "apple-pmp-thermal",
++					      PLATFORM_DEVID_AUTO, &data,
++					      sizeof(data));
++	if (IS_ERR(child))
++		return PTR_ERR(child);
++	ret = devm_add_action_or_reset(dev, apple_pmp_thermal_unregister,
++				       child);
++	if (ret)
++		return ret;
++	return 0;
++}
++
++void apple_pmp_telemetry_stop(struct device *dev)
++{
++	struct apple_pmp_telemetry *sensors;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list)
++		if (sensors->dev == dev)
++			WRITE_ONCE(sensors->online, false);
++	rcu_read_unlock();
++}
+diff --git a/drivers/soc/apple/pmp.rs b/drivers/soc/apple/pmp.rs
+index 10b884006978bc..02ac4d87815d43 100644
+--- a/drivers/soc/apple/pmp.rs
++++ b/drivers/soc/apple/pmp.rs
+@@ -6,6 +6,7 @@
+ //! Copyright (C) The Asahi Linux Contributors
+ 
+ use core::mem;
++use core::sync::atomic::{AtomicBool, Ordering};
+ 
+ mod pmp_bootargs;
+ mod pmp_power;
+@@ -17,17 +18,22 @@ use kernel::{
+         self,
+         Core, //
+     },
++    devres::Devres,
+     dma::{
+         Coherent,
+         CoherentBox,
+         Device as _,
+         DmaMask, //
+     },
++    error::to_result,
+     io::{
++        mem::IoMem,
+         Io,
++        IoBackend,
+         IoBase,
+         IoSysMap,
+         Mmio,
++        MmioBackend,
+         Region, //
+     },
+     kvec,
+@@ -132,10 +138,13 @@ impl PmpState {
+ #[pin_data]
+ struct PmpData {
+     dev: ARef<device::Device>,
++    pmp_mmio: Devres<IoMem<'static, PMP_MIN_MMIO_SIZE>>,
++    asc_mmio: Devres<IoMem<'static, ASC_MMIO_SIZE>>,
+     #[pin]
+     rtkit: Mutex<Option<rtkit::RtKit<PmpData>>>,
+     #[pin]
+     state: Mutex<PmpState>,
++    failed: AtomicBool,
+     #[pin]
+     power_command: Mutex<Command>,
+     #[pin]
+@@ -144,6 +153,10 @@ struct PmpData {
+ 
+ impl PmpData {
+     fn new(dev: &platform::Device<Core<'_>>) -> Result<Arc<PmpData>> {
++        let pmp_req = dev.io_request_by_name(c"pmp").ok_or(EINVAL)?;
++        let pmp_mmio = pmp_req.iomap_sized::<PMP_MIN_MMIO_SIZE>()?.into_devres()?;
++        let asc_req = dev.io_request_by_name(c"asc").ok_or(EINVAL)?;
++        let asc_mmio = asc_req.iomap_sized::<ASC_MMIO_SIZE>()?.into_devres()?;
+         Arc::pin_init(
+             try_pin_init!(
+                 PmpData {
+@@ -152,6 +165,9 @@ impl PmpData {
+                     state <- new_mutex!(PmpState::new()?),
+                     power_command <- new_mutex!(Command::Idle),
+                     power_reply <- new_condvar!(),
++                    failed: AtomicBool::new(false),
++                    pmp_mmio,
++                    asc_mmio,
+                 }
+             ),
+             GFP_KERNEL,
+@@ -356,6 +372,11 @@ impl PmpData {
+         let msg = (OPC_SET_IOREG | OPC_ACK_MASK) << OPC_SHIFT | len;
+         Ok(msg)
+     }
++    fn fail_telemetry(&self) {
++        self.failed.store(true, Ordering::SeqCst);
++        // SAFETY: the telemetry provider is owned by this live PMP device.
++        unsafe { bindings::apple_pmp_telemetry_stop(self.dev.as_raw()) };
++    }
+     fn recv_message(&self, msg: u64) -> Result<()> {
+         let pm_command = (msg >> PM_COMMAND_SHIFT) & 0xff;
+         if msg & PM_COMMAND_MARKER != 0 && (pm_command == 0x0f || pm_command == 0x10) {
+@@ -471,6 +492,7 @@ impl rtkit::Operations for PmpData {
+     fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _ep: u8, msg: u64) {
+         let ret = data.recv_message(msg);
+         if let Err(e) = ret {
++            data.fail_telemetry();
+             dev_err!(data.dev, "Failed to handle rtkit message, error: {:?}", e);
+         }
+     }
+@@ -478,6 +500,7 @@ impl rtkit::Operations for PmpData {
+     fn crashed(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _crashlog: Option<&[u8]>) {
+         *data.power_command.lock() = Command::Failed;
+         data.power_reply.notify_all();
++        data.fail_telemetry();
+         dev_err!(data.dev, "PMP firmware crashed");
+     }
+ }
+@@ -490,13 +513,23 @@ struct PmpHwConfig {
+     /// DMA mask to set before the firmware allocates anything, or `None` to
+     /// keep the default.
+     dma_mask: Option<DmaMask>,
++    coreanalytics: bool,
+ }
+ 
+-const HW_CFG_DEFAULT: PmpHwConfig = PmpHwConfig { dma_mask: None };
++const HW_CFG_DEFAULT: PmpHwConfig = PmpHwConfig {
++    dma_mask: None,
++    coreanalytics: false,
++};
+ 
+ /// T8140: the DART translates 42 bits and its DMA window starts at 1 TiB.
+ const HW_CFG_T8140: PmpHwConfig = PmpHwConfig {
+     dma_mask: Some(DmaMask::new::<42>()),
++    coreanalytics: false,
++};
++
++const HW_CFG_T8132: PmpHwConfig = PmpHwConfig {
++    dma_mask: None,
++    coreanalytics: true,
+ };
+ 
+ impl Drop for PmpDriver {
+@@ -511,6 +544,7 @@ kernel::of_device_table!(
+     MODULE_OF_TABLE,
+     <PmpDriver as platform::Driver>::IdInfo,
+     [
++        (of::DeviceId::new(c"apple,t8132-pmp-v2"), &HW_CFG_T8132),
+         (of::DeviceId::new(c"apple,t8140-pmp-v2"), &HW_CFG_T8140),
+         (of::DeviceId::new(c"apple,t6000-pmp-v2"), &HW_CFG_DEFAULT),
+     ]
+@@ -520,6 +554,12 @@ impl platform::Driver for PmpDriver {
+     type IdInfo = &'static PmpHwConfig;
+     type Data<'bound> = PmpDriver;
+ 
++    fn suppress_bind_attrs() -> bool {
++        // Firmware and its telemetry consumers are retained until reboot.
++        // SAFETY: read-only machine compatibility check.
++        unsafe { bindings::apple_pmp_telemetry_retained_board() }
++    }
++
+     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
+ 
+     fn probe<'bound>(
+@@ -533,13 +573,9 @@ impl platform::Driver for PmpDriver {
+             // yet.
+             unsafe { pdev.dma_set_mask_and_coherent(mask)? };
+         }
+-        let pmp_req = pdev.io_request_by_name(c"pmp").ok_or(EINVAL)?;
+-        let pmp_mmio = pmp_req.iomap_sized::<PMP_MIN_MMIO_SIZE>()?;
+-        let pmp_mmio = pmp_mmio.as_view();
+-        let asc_req = pdev.io_request_by_name(c"asc").ok_or(EINVAL)?;
+-        let asc_mmio = asc_req.iomap_sized::<ASC_MMIO_SIZE>()?;
+-        let asc_mmio = asc_mmio.as_view().relaxed();
+         let data = PmpData::new(pdev)?;
++        let pmp_mmio = data.pmp_mmio.access(pdev.as_ref())?.as_view();
++        let asc_mmio = data.asc_mmio.access(pdev.as_ref())?.as_view();
+         let node = dev.fwnode().ok_or(EIO)?;
+         let dvid = node
+             .property_read(c"apple,dram-vendor-id")
+@@ -559,10 +595,30 @@ impl platform::Driver for PmpDriver {
+                 &[(from_fourcc(b"BDID"), bdid), (from_fourcc(b"DVID"), dvid)],
+             )?,
+         };
+-        let rtkit = rtkit::RtKit::<PmpData>::new(&dev, None, 0, data.clone())?;
++        // EP7 is a qualified startup dependency only on the retained J713 PMP.
++        // SAFETY: the predicate only reads machine compatibility.
++        let needs_coreanalytics = cfg.coreanalytics
++            && unsafe { bindings::apple_pmp_telemetry_retained_board() };
++        let rtkit = if needs_coreanalytics {
++            rtkit::RtKit::<PmpData>::new_with_coreanalytics(&dev, None, 0, data.clone())?
++        } else {
++            rtkit::RtKit::<PmpData>::new(&dev, None, 0, data.clone())?
++        };
+         data.rtkit.lock().as_mut().set(Some(rtkit));
+-        asc_mmio.update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<1>());
++        asc_mmio.relaxed().update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<1>());
+         data.start()?;
++        // SAFETY: the PMP owner retains both Devres mappings; managed child
++        // teardown and provider cleanup precede device mapping revocation.
++        to_result(unsafe {
++            bindings::apple_pmp_telemetry_register(
++                dev.as_raw(), MmioBackend::as_ptr(pmp_mmio).cast(), pmp_mmio.size(),
++                MmioBackend::as_ptr(asc_mmio).cast(),
++            )
++        })?;
++        if data.failed.load(Ordering::SeqCst) {
++            // SAFETY: registration returned the live managed provider.
++            unsafe { bindings::apple_pmp_telemetry_stop(dev.as_raw()) };
++        }
+         dev_info!(dev, "PMP firmware and endpoint ready");
+         // SAFETY: PmpDriver retains this Arc and unregisters it before dropping it.
+         let ret = unsafe { bindings::apple_pmp_register(dev.as_raw(), Arc::as_ptr(&data).cast()) };
+@@ -571,6 +627,10 @@ impl platform::Driver for PmpDriver {
+         }
+         Ok(PmpDriver(data))
+     }
++
++    fn unbind<'bound>(_dev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
++        this.0.fail_telemetry();
++    }
+ }
+ 
+ module_platform_driver! {
+diff --git a/include/linux/soc/apple/pmp-telemetry.h b/include/linux/soc/apple/pmp-telemetry.h
+new file mode 100644
+index 00000000000000..9081243029157c
+--- /dev/null
++++ b/include/linux/soc/apple/pmp-telemetry.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef _LINUX_SOC_APPLE_PMP_TELEMETRY_H
++#define _LINUX_SOC_APPLE_PMP_TELEMETRY_H
++
++#include <linux/types.h>
++
++bool apple_pmp_telemetry_retained_board(void);
++
++struct device;
++struct device_node;
++struct apple_pmp_telemetry;
++
++/* Owned by the PMP parent; consumers cannot restart or map the firmware. */
++struct apple_pmp_sensor_data {
++	int (*read)(void *cookie, unsigned int channel, long *value);
++	void *cookie;
++};
++
++int apple_pmp_telemetry_register(struct device *dev, void __iomem *sram,
++			       size_t size, void __iomem *asc);
++void apple_pmp_telemetry_stop(struct device *dev);
++
++/*
++ * Read through the bound firmware owner, never through a consumer mapping.
++ * This checks provider/crash state and record consistency, not firmware
++ * progress: T8132 has no qualified temperature timestamp or heartbeat yet.
++ * Any context; returns -EPROBE_DEFER before registration, -ENODEV after stop,
++ * or the temperature-record error. The caller must retain @np.
++ */
++int apple_pmp_telemetry_get_hotspot(const struct device_node *np, long *value);
++
++#endif
+diff --git a/include/linux/soc/apple/pmp-temps.h b/include/linux/soc/apple/pmp-temps.h
+index 40156a836befe4..fe9bf8faf03bbc 100644
+--- a/include/linux/soc/apple/pmp-temps.h
++++ b/include/linux/soc/apple/pmp-temps.h
+@@ -65,21 +65,25 @@ static inline int apple_pmp_temp_sample(void __iomem *sram, unsigned int index,
+ 	return -EAGAIN;
+ }
+ 
+-static inline int apple_pmp_temp_hotspot(void __iomem *sram, long *value)
++static inline int apple_pmp_temp_hotspot_channel(void __iomem *sram, long *value,
++					       int *channel)
+ {
+ 	bool found = false;
+ 	long hottest = 0, sample;
+ 	unsigned int i;
+ 	int ret;
+ 
++	*channel = -1;
+ 	for (i = 0; i < ARRAY_SIZE(apple_pmp_temp_records); i++) {
+ 		ret = apple_pmp_temp_sample(sram, i, &sample);
+ 		if (ret == -ENODATA)
+ 			continue;
+ 		if (ret)
+ 			return ret;
+-		if (!found || sample > hottest)
++		if (!found || sample > hottest) {
+ 			hottest = sample;
++			*channel = i;
++		}
+ 		found = true;
+ 	}
+ 
+@@ -89,4 +93,11 @@ static inline int apple_pmp_temp_hotspot(void __iomem *sram, long *value)
+ 	return 0;
+ }
+ 
++static inline int apple_pmp_temp_hotspot(void __iomem *sram, long *value)
++{
++	int channel;
++
++	return apple_pmp_temp_hotspot_channel(sram, value, &channel);
++}
++
+ #endif
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index ac98075cde038c..1453c8a2e14101 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -98,6 +98,7 @@
+ #include <linux/security.h>
+ #include <linux/slab.h>
+ #include <linux/soc/apple/mailbox.h>
++#include <linux/soc/apple/pmp-telemetry.h>
+ #include <linux/soc/apple/rtkit.h>
+ #include <linux/soc/apple/pmp.h>
+ #include <linux/sys_soc.h>
+

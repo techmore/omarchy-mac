@@ -1,0 +1,135 @@
+From: Gravity Linux contributors
+
+Subject: [WIP] arm64: dts: add disabled J773g built-in HDMI wiring
+
+Adapted from GravityLinux/linux 4fc326f6c25ccceb7515e2635c22e01fde5d3bac T8132 and J773g device trees. Keep all display nodes disabled pending WIP5 driver and bootloader handoff integration.
+
+diff --git a/arch/arm64/boot/dts/apple/t8132-j773g-hdmi.dtsi b/arch/arm64/boot/dts/apple/t8132-j773g-hdmi.dtsi
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f996ad3548e78d33dabd0e1c606cae19a16b88a
+--- /dev/null
++++ b/arch/arm64/boot/dts/apple/t8132-j773g-hdmi.dtsi
+@@ -0,0 +1,111 @@
++// SPDX-License-Identifier: GPL-2.0+ OR MIT
++/*
++ * J773g built-in HDMI draft, adapted from Gravity Linux's T8132/J773g DT.
++ * The DCP, DARTs and PHY stay disabled until the matching M4 display driver,
++ * firmware reservations and bootloader handoff are integrated and reviewed.
++ */
++
++#include <dt-bindings/gpio/gpio.h>
++
++/ {
++	j773g_clk_disp0: clock-j773g-disp0 {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <300000000>;
++		clock-output-names = "disp0";
++	};
++};
++
++&soc {
++	j773g_disp0_dart: iommu@30a300000 {
++		compatible = "apple,t8132-dart", "apple,t8110-dart";
++		reg = <0x3 0x0a300000 0x0 0xc000>;
++		#iommu-cells = <1>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 678 IRQ_TYPE_LEVEL_HIGH>;
++		apple,dma-range = <0x100 0x0 0x10 0x0>;
++		status = "disabled";
++	};
++
++	j773g_dcp_dart: iommu@30a340000 {
++		compatible = "apple,t8132-dart", "apple,t8110-dart";
++		reg = <0x3 0x0a340000 0x0 0x20000>;
++		#iommu-cells = <1>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 678 IRQ_TYPE_LEVEL_HIGH>;
++		apple,dma-range = <0x100 0x0 0x10 0x0>;
++		status = "disabled";
++	};
++
++	j773g_dcp_mbox: mailbox@30ae08000 {
++		compatible = "apple,t8103-asc-mailbox", "apple,asc-mailbox-v4";
++		reg = <0x3 0x0ae08000 0x0 0x4000>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 653 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 654 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 655 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 656 IRQ_TYPE_LEVEL_HIGH>;
++		interrupt-names = "send-empty", "send-not-empty",
++				  "recv-empty", "recv-not-empty";
++		#mbox-cells = <0>;
++		status = "disabled";
++	};
++
++	j773g_pmgr_dcp: power-management@382800000 {
++		reg = <0x3 0x82800000 0x0 0xbc000>;
++		reg-names = "dcp-fw-pmgr";
++		#apple,bw-scratch-cells = <3>;
++		status = "disabled";
++	};
++
++	j773g_dptxphy: phy@39a700000 {
++		compatible = "apple,t8122-dptx-phy", "apple,dptx-phy";
++		reg = <0x3 0x9a700000 0x0 0x4000>,
++		      <0x3 0x9a740000 0x0 0x10000>;
++		reg-names = "core", "dptx";
++		power-domains = <&ps_dptx_phy>;
++		#phy-cells = <0>;
++		#reset-cells = <0>;
++		status = "disabled";
++	};
++
++	j773g_dcp: dcp@30ae00000 {
++		compatible = "apple,t8132-dcp", "apple,dcp";
++		mboxes = <&j773g_dcp_mbox>;
++		mbox-names = "mbox";
++		iommus = <&j773g_dcp_dart 23>;
++		reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3";
++		reg = <0x3 0x0ae00000 0x0 0x4000>,
++		      <0x3 0x08000000 0x0 0xc20000>,
++		      <0x3 0x0a240000 0x0 0x10000>,
++		      <0x3 0x0a3a8000 0x0 0x4000>,
++		      <0x3 0x0a800000 0x0 0x800000>;
++		apple,bw-scratch = <&j773g_pmgr_dcp 0 4 0x20000>;
++		apple,iomfb-surfaces = <1 1 0 0>;
++		apple,iomfb-surface-order = <0 1>;
++		apple,iomfb-primary-surface = <0>;
++		apple,iomfb-max-layers = <3>;
++		clocks = <&j773g_clk_disp0>;
++		apple,connector-type = "HDMI-A";
++		phys = <&j773g_dptxphy>;
++		phy-names = "dp-phy";
++		apple,dptx-phy = <4>;
++		hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
++		dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
++		#address-cells = <2>;
++		#size-cells = <2>;
++		status = "disabled";
++
++		j773g_disp0_piodma: piodma {
++			iommus = <&j773g_disp0_dart 16>;
++			status = "disabled";
++		};
++	};
++
++	j773g_display: display-subsystem {
++		compatible = "apple,display-subsystem";
++		iommus = <&j773g_disp0_dart 0>;
++		dma-noncoherent;
++		status = "disabled";
++	};
++};
+diff --git a/arch/arm64/boot/dts/apple/t8132-j773g.dts b/arch/arm64/boot/dts/apple/t8132-j773g.dts
+index b8dce34ef62cc8b858c44b90a8cd06f8a116d3bd..3f196732d3c535902cc676a3d5bf1733a7939101 100644
+--- a/arch/arm64/boot/dts/apple/t8132-j773g.dts
++++ b/arch/arm64/boot/dts/apple/t8132-j773g.dts
+@@ -11,6 +11,7 @@
+ 
+ #include "t8132.dtsi"
+ #include "t8132-jxxx.dtsi"
++#include "t8132-j773g-hdmi.dtsi"
+ 
+ / {
+ 	compatible = "apple,j773g", "apple,t8132", "apple,arm-platform";

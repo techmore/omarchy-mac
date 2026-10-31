@@ -1,0 +1,1412 @@
+From 887ad69ee75d98dea43c5890733f2eda7059b44f Mon Sep 17 00:00:00 2001
+From: Eryk Wieliczko <eryk@wieliczko.ninja>
+Date: Sun, 18 Oct 2026 11:17:51 +0200
+Subject: [PATCH 19/27] thermal: apple: add the J713 PMP CPU policy
+
+Bind CPU protection and measured-rail budgeting to owner-managed PMP
+telemetry. Separate the explicitly provisional emergency shutdown policy
+from Linux cooling controls and document the unqualified firmware limits.
+Keep startup, provider lifetime and policy coverage with the implementation.
+
+Source-commit: 2c77214dec2a2604685f53eb1d48477ddd78bb1c
+Source-snapshot: 9ffa1fbed1e052d9706ad3e13c8663bc8ffe3d8d
+Assisted-by: LLM
+---
+ Documentation/driver-api/index.rst            |   1 +
+ Documentation/soc/apple/index.rst             |  10 +
+ Documentation/soc/apple/t8132-pmp-thermal.rst |  44 +
+ MAINTAINERS                                   |   1 +
+ drivers/thermal/Kconfig                       |  26 +
+ drivers/thermal/Makefile                      |   3 +
+ drivers/thermal/apple-pmp-confirm.h           |  33 +
+ drivers/thermal/apple-pmp-policy-test.c       |  77 ++
+ drivers/thermal/apple-pmp-thermal.c           | 756 ++++++++++++++++++
+ include/linux/soc/apple/pmp-cooling.h         | 161 ++++
+ .../linux/soc/apple/pmp-emergency-policy.h    |  15 +
+ include/linux/soc/apple/pmp-power-policy.h    | 161 ++++
+ 12 files changed, 1288 insertions(+)
+ create mode 100644 Documentation/soc/apple/index.rst
+ create mode 100644 Documentation/soc/apple/t8132-pmp-thermal.rst
+ create mode 100644 drivers/thermal/apple-pmp-confirm.h
+ create mode 100644 drivers/thermal/apple-pmp-policy-test.c
+ create mode 100644 drivers/thermal/apple-pmp-thermal.c
+ create mode 100644 include/linux/soc/apple/pmp-cooling.h
+ create mode 100644 include/linux/soc/apple/pmp-emergency-policy.h
+ create mode 100644 include/linux/soc/apple/pmp-power-policy.h
+
+diff --git a/Documentation/driver-api/index.rst b/Documentation/driver-api/index.rst
+index eaf7161ff95781..ea2097241224fd 100644
+--- a/Documentation/driver-api/index.rst
++++ b/Documentation/driver-api/index.rst
+@@ -79,6 +79,7 @@ Subsystem-specific APIs
+ 
+    80211/index
+    acpi/index
++   ../soc/apple/index
+    backlight/lp855x-driver.rst
+    clk
+    coco/index
+diff --git a/Documentation/soc/apple/index.rst b/Documentation/soc/apple/index.rst
+new file mode 100644
+index 00000000000000..a892f457fa50fb
+--- /dev/null
++++ b/Documentation/soc/apple/index.rst
+@@ -0,0 +1,10 @@
++.. SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++Apple SoC drivers
++=================
++
++.. toctree::
++   :maxdepth: 1
++
++   t8132-pmp-thermal
++   t8140-pmp-dvfs
+diff --git a/Documentation/soc/apple/t8132-pmp-thermal.rst b/Documentation/soc/apple/t8132-pmp-thermal.rst
+new file mode 100644
+index 00000000000000..e0b4872cdbb564
+--- /dev/null
++++ b/Documentation/soc/apple/t8132-pmp-thermal.rst
+@@ -0,0 +1,44 @@
++.. SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++T8132 PMP temperature ownership and policy status
++================================================
++
++The PMP driver owns its firmware, SRAM mapping and temperature records.
++Consumers must use ``apple_pmp_telemetry_get_hotspot()`` with a retained PMP
++device-tree node reference. They must not map a physical SRAM address or
++restart the PMP themselves. Provider removal drains RCU readers before
++releasing its mappings. A stopped provider, an observed firmware crash or
++inconsistent records returns an error; cooling consumers retain their
++restricted state on an error.
++
++These checks establish ownership and record consistency. The ASC RUN bit and
++the temperature valid flag do not establish firmware progress. No advancing
++T8132 temperature counter, timestamp or heartbeat is qualified in this driver.
++An unchanged temperature is not evidence of a hang, so the driver does not
++invent a change timeout. Silent firmware freezes remain a qualification gap.
++
++J713's temperature topology has been exercised on hardware, but its Linux
++cooling and measured-rail budget are provisional operating policies. The
++temperature trips, power envelope and unmanaged CPU ceiling must not be
++described as Apple firmware limits or thermal parity with another SoC. T8132
++does not currently have a qualified effort lane in the PMP report driver.
++
++The historical emergency shutdown threshold is kept in
++``pmp-emergency-policy.h`` separately from ordinary cooling tuning. This
++separation does not qualify that threshold: it remains an existing development
++restriction pending source-backed emergency policy. Removing it merely because
++its contract is unknown would weaken the deployed backstop. An observed macOS
++peak or successful desktop test does not establish an emergency limit.
++
++CPU protection startup retries missing cpufreq policies independently of
++platform deferred probing. The ``ready`` module parameter becomes true only
++after both cooling devices, minimum-frequency QoS guards and thermal zone
++bindings are installed and cpufreq ownership is transferred. Until then the
++cpufreq driver's unmanaged ceiling remains in place. Last-CPU offline on T8132
++keeps the policy's table and ownership alive; thermal removal restores the
++unmanaged ceiling before removing its guards.
++
++Before presenting this policy as complete firmware-driven thermal integration,
++qualify the T8132 firmware effort or limit contract and an advancing liveness
++source. Boot and thermal-policy tests must check ``ready`` and provider errors,
++including startup ordering, whole-cluster hotplug and policy removal.
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 85f49f6c6cc48c..aa71e0e7edc65e 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -2719,6 +2719,7 @@ F:	drivers/soc/apple/*
+ F:	tools/asahi/pmp-bootargs-tests.rs
+ F:	drivers/spi/spi-apple.c
+ F:	drivers/spmi/spmi-apple-controller.c
++F:	drivers/thermal/apple-pmp*
+ F:	drivers/thunderbolt/.kunitconfig.apple-dpin
+ F:	drivers/thunderbolt/apple-dpin*
+ F:	drivers/thunderbolt/apple.c
+diff --git a/drivers/thermal/Kconfig b/drivers/thermal/Kconfig
+index 810eeccedfbab2..a814dc3dc552db 100644
+--- a/drivers/thermal/Kconfig
++++ b/drivers/thermal/Kconfig
+@@ -530,4 +530,30 @@ config LOONGSON2_THERMAL
+ 	  is higher than the high temperature threshold or lower than the low
+ 	  temperature threshold, the interrupt will occur.
+ 
++config APPLE_PMP_POLICY_KUNIT_TEST
++	tristate "KUnit tests for Apple PMP thermal policy" if !KUNIT_ALL_TESTS
++	depends on KUNIT
++	default KUNIT_ALL_TESTS
++	help
++	  Check fault guards, time-based recovery, critical confirmation and
++	  power-record validation using the actual shared policy helpers.
++	  No firmware or hardware access is required to run these tests.
++	  Enable this only for kernel development and regression testing.
++
++config APPLE_PMP_THERMAL
++	tristate "Apple PMP CPU thermal policy"
++	depends on ARCH_APPLE && THERMAL_OF && ARM_APPLE_SOC_CPUFREQ
++	depends on APPLE_PMP && HWMON && MFD_MACSMC
++	select CPU_THERMAL
++	select CPU_FREQ_THERMAL
++	select THERMAL_GOV_STEP_WISE
++	help
++	  CPU cooling and fault guards fed by read-only sensors from the PMP
++	  firmware owner. Higher CPU states remain capped until protection is
++	  installed. The sensor topology is qualified for J713 only. Cooling,
++	  measured-rail budgets and the separate emergency shutdown are provisional
++	  Linux policies, not Apple firmware limits. A T8132 firmware effort lane,
++	  emergency limit and advancing telemetry heartbeat remain unqualified.
++	  The firmware itself remains owned by the PMP parent driver.
++
+ endif
+diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
+index 3b249195c088ef..39156ba7e8d303 100644
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -70,3 +70,6 @@ obj-$(CONFIG_SPRD_THERMAL)	+= sprd_thermal.o
+ obj-$(CONFIG_KHADAS_MCU_FAN_THERMAL)	+= khadas_mcu_fan.o
+ obj-$(CONFIG_LOONGSON2_THERMAL)	+= loongson2_thermal.o
+ obj-$(CONFIG_THERMAL_CORE_TESTING)	+= testing/
++
++obj-$(CONFIG_APPLE_PMP_THERMAL) += apple-pmp-thermal.o
++obj-$(CONFIG_APPLE_PMP_POLICY_KUNIT_TEST) += apple-pmp-policy-test.o
+diff --git a/drivers/thermal/apple-pmp-confirm.h b/drivers/thermal/apple-pmp-confirm.h
+new file mode 100644
+index 00000000000000..de25ef1b078179
+--- /dev/null
++++ b/drivers/thermal/apple-pmp-confirm.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef APPLE_PMP_CONFIRM_H
++#define APPLE_PMP_CONFIRM_H
++
++#include <linux/soc/apple/pmp-emergency-policy.h>
++
++/* Raw critical samples, never an average. Call under the policy mutex. */
++struct apple_pmp_confirmation {
++	unsigned int count;
++	unsigned long long last_ns;
++	bool confirmed;
++};
++
++static inline void apple_pmp_confirmation_sample(struct apple_pmp_confirmation *s,
++						long mc, int error,
++						unsigned long long now)
++{
++	/* Once confirmed, retain the shutdown request until it is serviced. */
++	if (s->confirmed)
++		return;
++	if (error || mc < APPLE_PMP_CRITICAL_MC) {
++		s->count = 0;
++		s->last_ns = 0;
++		return;
++	}
++	/* sysfs reads cannot turn one firmware record into three confirmations. */
++	if (s->count && now - s->last_ns < 5000000ULL)
++		return;
++	s->last_ns = now;
++	if (++s->count == 3)
++		s->confirmed = true;
++}
++#endif
+diff --git a/drivers/thermal/apple-pmp-policy-test.c b/drivers/thermal/apple-pmp-policy-test.c
+new file mode 100644
+index 00000000000000..e539ff5a5d6f91
+--- /dev/null
++++ b/drivers/thermal/apple-pmp-policy-test.c
+@@ -0,0 +1,77 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++#include <kunit/test.h>
++#include <linux/soc/apple/pmp-cooling.h>
++#include <linux/soc/apple/pmp-power-policy.h>
++#include "apple-pmp-confirm.h"
++
++static void apple_pmp_test_fault_recovery(struct kunit *test)
++{
++	struct apple_pmp_cooling state;
++	unsigned int i;
++
++	apple_pmp_cooling_init(&state);
++	for (i = 0; i < 100; i++)
++		apple_pmp_cooling_sample(&state, 20000000, 50000, 0);
++	KUNIT_EXPECT_TRUE(test, state.hard);
++	KUNIT_EXPECT_EQ(test, state.good_reads, 1U);
++	for (i = 2; i <= 10; i++)
++		apple_pmp_cooling_sample(&state, i * 20000000ULL, 50000, 0);
++	KUNIT_EXPECT_FALSE(test, state.hard);
++	KUNIT_EXPECT_EQ(test, state.level, 8U);
++	apple_pmp_cooling_sample(&state, 400000000, 50000, 0);
++	KUNIT_EXPECT_EQ(test, state.level, 7U);
++	apple_pmp_cooling_sample(&state, 405000000, 50000, -EIO);
++	KUNIT_EXPECT_TRUE(test, state.hard);
++	KUNIT_EXPECT_EQ(test, state.level, 8U);
++}
++
++static void apple_pmp_test_critical_confirmation(struct kunit *test)
++{
++	struct apple_pmp_confirmation state = {};
++	unsigned int i;
++
++	for (i = 0; i < 100; i++)
++		apple_pmp_confirmation_sample(&state, APPLE_PMP_CRITICAL_MC, 0, 10000000);
++	KUNIT_EXPECT_EQ(test, state.count, 1U);
++	KUNIT_EXPECT_FALSE(test, state.confirmed);
++	apple_pmp_confirmation_sample(&state, APPLE_PMP_CRITICAL_MC, -EIO, 15000000);
++	KUNIT_EXPECT_EQ(test, state.count, 0U);
++	for (i = 0; i < 3; i++)
++		apple_pmp_confirmation_sample(&state, APPLE_PMP_CRITICAL_MC, 0,
++					      20000000 + i * 5000000ULL);
++	KUNIT_EXPECT_TRUE(test, state.confirmed);
++	apple_pmp_confirmation_sample(&state, 0, -EIO, 40000000);
++	KUNIT_EXPECT_TRUE(test, state.confirmed);
++}
++
++static void apple_pmp_test_power_validation(struct kunit *test)
++{
++	struct apple_pmp_power_policy state;
++	u32 mw;
++	u32 rails[3] = { 4000, 1000, 0 };
++
++	KUNIT_EXPECT_TRUE(test, apple_pmp_power_decode(0x3f800000, &mw));
++	KUNIT_EXPECT_EQ(test, mw, 1000U);
++	KUNIT_EXPECT_FALSE(test, apple_pmp_power_decode(0x7f800000, &mw));
++	KUNIT_EXPECT_FALSE(test, apple_pmp_power_decode(0xbf800000, &mw));
++	KUNIT_EXPECT_FALSE(test, apple_pmp_power_decode(0x42500000, &mw));
++	apple_pmp_power_init(&state);
++	apple_pmp_power_sample(&state, 500000000, rails, 60000, -EIO);
++	KUNIT_EXPECT_TRUE(test, state.fault);
++	KUNIT_EXPECT_EQ(test, state.level[0], 8U);
++	KUNIT_EXPECT_EQ(test, state.level[1], 8U);
++}
++
++static struct kunit_case apple_pmp_policy_cases[] = {
++	KUNIT_CASE(apple_pmp_test_fault_recovery),
++	KUNIT_CASE(apple_pmp_test_critical_confirmation),
++	KUNIT_CASE(apple_pmp_test_power_validation),
++	{},
++};
++
++static struct kunit_suite apple_pmp_policy_suite = {
++	.name = "apple-pmp-policy",
++	.test_cases = apple_pmp_policy_cases,
++};
++kunit_test_suite(apple_pmp_policy_suite);
++MODULE_LICENSE("Dual MIT/GPL");
+diff --git a/drivers/thermal/apple-pmp-thermal.c b/drivers/thermal/apple-pmp-thermal.c
+new file mode 100644
+index 00000000000000..01e6907e209111
+--- /dev/null
++++ b/drivers/thermal/apple-pmp-thermal.c
+@@ -0,0 +1,756 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/*
++ * J713 CPU thermal policy using read-only samples from the PMP owner.
++ * The policy and thresholds are carried from the existing M4 implementation;
++ * these are Linux operating limits, not inferred Apple hardware safety limits.
++ * Guards are installed before cpufreq relinquishes its unmanaged ceiling.
++ */
++
++#include <linux/cpu.h>
++#include <linux/cpu_cooling.h>
++#include <linux/cpufreq.h>
++#include <linux/hwmon.h>
++#include <linux/hrtimer.h>
++#include <linux/jiffies.h>
++#include <linux/ktime.h>
++#include <linux/math64.h>
++#include <linux/mfd/macsmc.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/pm_qos.h>
++#include <linux/soc/apple/cpufreq-thermal.h>
++#include <linux/soc/apple/pmp-temps.h>
++#include <linux/soc/apple/pmp-telemetry.h>
++#include <linux/soc/apple/pmp-cooling.h>
++#include <linux/soc/apple/pmp-power-policy.h>
++#include <linux/thermal.h>
++#include <linux/workqueue.h>
++
++#include "apple-pmp-confirm.h"
++
++/* Fast raw protection and ordinary governor regulation have separate clocks.
++ * No sysfs read advances either controller. Thresholds remain a development
++ * policy, not an inference of Apple's limits from macOS temperature peaks.
++ */
++#define APPLE_PMP_HYST_MC		2000
++#define APPLE_PMP_POLL_MS		5
++#define APPLE_PMP_GOVERNOR_NS	100000000ULL
++
++struct apple_pmp_cluster {
++	struct cpufreq_policy *policy;
++	struct thermal_cooling_device *cdev;
++	struct freq_qos_request guard;
++};
++
++static struct {
++	const struct apple_pmp_sensor_data *sensors;
++	struct thermal_zone_device *zone;
++	struct apple_pmp_cluster clusters[2];
++	struct mutex lock; /* Serializes sensor reads, mode changes and guard updates. */
++	struct apple_pmp_cooling cooling;
++	struct apple_pmp_power_policy power;
++	struct delayed_work setup_work;
++	struct delayed_work power_work;
++	struct device *power_hwmon;
++	unsigned int rail_mw[3];
++	int power_error;
++	bool power_polling;
++	unsigned int guard_level;
++	bool enabled;
++	long cached_mc;
++	int cached_error;
++	u64 governor_ns;
++	unsigned long long sample_count, governor_count;
++	struct apple_pmp_confirmation critical;
++	bool shutdown_requested;
++	struct hrtimer poll_timer;
++	struct work_struct poll_work;
++	bool polling;
++	bool owner; /* apple-soc-cpufreq's unmanaged cap is released */
++	bool critical_dumped;
++	bool ready;
++} pmp_thermal = {
++	.lock = __MUTEX_INITIALIZER(pmp_thermal.lock),
++};
++
++/* Read-only cadence diagnostics: reading temperatures must not advance these. */
++module_param_named(sample_count, pmp_thermal.sample_count, ullong, 0444);
++module_param_named(governor_count, pmp_thermal.governor_count, ullong, 0444);
++module_param_named(ready, pmp_thermal.ready, bool, 0444);
++
++static int apple_pmp_power_status(char *buffer, const struct kernel_param *kp)
++{
++	struct apple_pmp_power_policy *p = &pmp_thermal.power;
++
++	guard(mutex)(&pmp_thermal.lock);
++	return scnprintf(buffer, PAGE_SIZE,
++		"ns=%llu p_mw=%u e_mw=%u gpu_mw=%u total_mw=%d sustainable_mw=%d allowed_mw=%d credit_mj=%lld filtered_mc=%d p_level=%u e_level=%u gpu_level=%u fault=%d error=%d\n",
++		p->last_ns, pmp_thermal.rail_mw[0], pmp_thermal.rail_mw[1],
++		pmp_thermal.rail_mw[2], p->total_mw, p->sustainable_mw,
++		p->allowed_mw, p->credit_mj, p->filtered_mc,
++		p->level[0], p->level[1], p->level[2], p->fault, pmp_thermal.power_error);
++}
++static const struct kernel_param_ops apple_pmp_power_status_ops = {
++	.get = apple_pmp_power_status,
++};
++module_param_cb(power_status, &apple_pmp_power_status_ops, NULL, 0400);
++
++static const smc_key apple_pmp_power_keys[] = {
++	SMC_KEY(PP0b), SMC_KEY(PPbb), SMC_KEY(PP1b),
++};
++
++static int apple_pmp_power_read_rails(unsigned int mw[3])
++{
++	struct device_node *np;
++	struct platform_device *pdev;
++	struct device *dev;
++	struct apple_smc *smc;
++	unsigned int i;
++	int ret = -EPROBE_DEFER;
++
++	np = of_find_compatible_node(NULL, NULL, "apple,t8132-smc");
++	if (!np)
++		return -ENODEV;
++	pdev = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!pdev)
++		return -EPROBE_DEFER;
++	dev = &pdev->dev;
++	/* A device reference alone does not pin its driver's private data.
++	 * Serialize every transaction with supplier unbind and fetch drvdata
++	 * only while the bound supplier is locked. Do not cache the SMC pointer.
++	 */
++	device_lock(dev);
++	smc = dev_get_drvdata(dev);
++	if (!dev->driver || !smc)
++		goto out;
++	for (i = 0; i < ARRAY_SIZE(apple_pmp_power_keys); i++) {
++		struct apple_smc_key_info info;
++		__le32 bits;
++		int bytes;
++
++		ret = apple_smc_get_key_info(smc, apple_pmp_power_keys[i], &info);
++		if (ret)
++			goto out;
++		if (info.size != 4 || info.type_code != _SMC_KEY("flt ") ||
++		    !(info.flags & APPLE_SMC_READABLE)) {
++			ret = -EINVAL;
++			goto out;
++		}
++		bytes = apple_smc_read(smc, apple_pmp_power_keys[i], &bits,
++				       sizeof(bits));
++
++		if (bytes != sizeof(bits)) {
++			ret = bytes < 0 ? bytes : -EIO;
++			goto out;
++		}
++		if (!apple_pmp_power_decode(le32_to_cpu(bits), &mw[i])) {
++			ret = -ERANGE;
++			goto out;
++		}
++	}
++	ret = 0;
++out:
++	device_unlock(dev);
++	put_device(dev);
++	return ret;
++}
++
++/* SMC transactions never run in the 5 ms raw-protection worker or while its
++ * mutex is held. A stalled SMC read expires both CPU/GPU budgets independently.
++ */
++static void apple_pmp_power_work(struct work_struct *work)
++{
++	struct apple_pmp_power_policy *p = &pmp_thermal.power;
++	unsigned int mw[3] = {}, budget[3];
++	u64 now;
++	int ret = apple_pmp_power_read_rails(mw);
++	/* The running CPUs/reader cannot plausibly consume <0.1 W in total.
++	 * A firmware reset/all-zero image must not refill the energy bucket.
++	 */
++	if (!ret && mw[0] + mw[1] + mw[2] < 100)
++		ret = -ENODATA;
++	/* Clock under the lock: a raw sample published while the SMC reads ran
++	 * must not make the unsigned age below wrap into a false -EAGAIN.
++	 */
++	mutex_lock(&pmp_thermal.lock);
++	now = ktime_get_ns();
++	if (!ret && (!pmp_thermal.enabled || pmp_thermal.cached_error ||
++		     now - pmp_thermal.cooling.last_ns > 500000000ULL))
++		ret = -EAGAIN;
++	pmp_thermal.power_error = ret;
++	if (!ret)
++		memcpy(pmp_thermal.rail_mw, mw, sizeof(mw));
++	/* Native GPU cooling is added by the graphics series. Until then,
++	 * budget CPU rails only and release capacity to the CPU clusters.
++	 */
++	budget[0] = mw[0];
++	budget[1] = mw[1];
++	budget[2] = 0;
++	apple_pmp_power_sample(p, now, budget, pmp_thermal.cached_mc, ret);
++	p->level[2] = 0;
++	pr_debug("apple-pmp-thermal: power ns=%llu mc=%ld p_mw=%u e_mw=%u gpu_mw=%u total_mw=%d sustainable_mw=%d allowed_mw=%d credit_mj=%lld p_level=%u e_level=%u gpu_level=%u error=%d\n",
++		now, pmp_thermal.cached_mc, mw[0], mw[1], mw[2], p->total_mw,
++		p->sustainable_mw, p->allowed_mw, p->credit_mj,
++		p->level[0], p->level[1], p->level[2], ret);
++	mutex_unlock(&pmp_thermal.lock);
++	if (ret)
++		pr_warn_ratelimited("apple-pmp-thermal: power telemetry error %d, retaining minimum CPU ceilings\n",
++				    ret);
++	schedule_delayed_work(&pmp_thermal.power_work, msecs_to_jiffies(500));
++}
++
++static umode_t apple_pmp_power_visible(const void *data,
++		enum hwmon_sensor_types type, u32 attr, int channel)
++{
++	return type == hwmon_power && channel >= 0 && channel < 4 ? 0444 : 0;
++}
++
++static int apple_pmp_power_read(struct device *dev, enum hwmon_sensor_types type,
++			       u32 attr, int channel, long *value)
++{
++	guard(mutex)(&pmp_thermal.lock);
++	if (type != hwmon_power || attr != hwmon_power_input || channel < 0 || channel > 3)
++		return -EINVAL;
++	if (pmp_thermal.power.fault || pmp_thermal.power_error ||
++	    ktime_get_ns() - pmp_thermal.power.last_ns > APPLE_PMP_POWER_STALE_NS)
++		return -EAGAIN;
++	*value = 1000L * (channel == 3 ? pmp_thermal.power.total_mw : pmp_thermal.rail_mw[channel]);
++	return 0;
++}
++
++static int apple_pmp_power_label(struct device *dev, enum hwmon_sensor_types type,
++				u32 attr, int channel, const char **label)
++{
++	static const char * const labels[] = {
++		"P CPU rail (PP0b)", "E CPU rail (PPbb)", "GPU rail (PP1b)",
++		"CPU rail sum (budgeted)",
++	};
++	if (type != hwmon_power || channel < 0 || channel > 3)
++		return -EINVAL;
++	*label = labels[channel];
++	return 0;
++}
++static const struct hwmon_ops apple_pmp_power_ops = {
++	.is_visible = apple_pmp_power_visible, .read = apple_pmp_power_read,
++	.read_string = apple_pmp_power_label,
++};
++static const struct hwmon_channel_info * const apple_pmp_power_info[] = {
++	HWMON_CHANNEL_INFO(power, HWMON_P_INPUT | HWMON_P_LABEL,
++		HWMON_P_INPUT | HWMON_P_LABEL, HWMON_P_INPUT | HWMON_P_LABEL,
++		HWMON_P_INPUT | HWMON_P_LABEL), NULL,
++};
++static const struct hwmon_chip_info apple_pmp_power_chip = {
++	.ops = &apple_pmp_power_ops, .info = apple_pmp_power_info,
++};
++
++
++/* Retain the actual samples used for the decision, including invalid or
++ * unavailable channels, for the critical log. A later read could miss the spike.
++ */
++struct apple_pmp_snapshot {
++	u64 started_ns;
++	u64 finished_ns;
++	long values[PMP_TEMP_CHANNELS];
++	int errors[PMP_TEMP_CHANNELS];
++};
++
++static int apple_pmp_sample_all(struct apple_pmp_snapshot *snapshot,
++				  long *value)
++{
++	bool found = false;
++	int first_error = 0;
++	unsigned int i;
++
++	memset(snapshot, 0, sizeof(*snapshot));
++	snapshot->started_ns = ktime_get_ns();
++	for (i = 0; i < PMP_TEMP_CHANNELS; i++) {
++		int ret = pmp_thermal.sensors->read(pmp_thermal.sensors->cookie, i,
++						&snapshot->values[i]);
++
++		snapshot->errors[i] = ret;
++		if (ret) {
++			if (ret != -ENODATA && !first_error)
++				first_error = ret;
++			continue;
++		}
++		if (!found || snapshot->values[i] > *value)
++			*value = snapshot->values[i];
++		found = true;
++	}
++	snapshot->finished_ns = ktime_get_ns();
++	return first_error ?: (found ? 0 : -ENODATA);
++}
++
++/* Logged at most twice, from the poll worker, before the shutdown request. */
++static void apple_pmp_critical_dump(const struct apple_pmp_snapshot *snapshot,
++				    const char *reason, long value, int error)
++{
++	unsigned int i;
++
++	pr_emerg("apple-pmp-thermal: %s hotspot_mc=%ld error=%d sample_start_ns=%llu sample_end_ns=%llu\n",
++		 reason, value, error, snapshot->started_ns, snapshot->finished_ns);
++	for (i = 0; i < PMP_TEMP_CHANNELS; i++)
++		pr_emerg("apple-pmp-thermal: %s mc=%ld error=%d\n",
++			 apple_pmp_temp_records[i].name, snapshot->values[i],
++			 snapshot->errors[i]);
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		struct cpufreq_policy *policy = pmp_thermal.clusters[i].policy;
++
++		if (policy)
++			pr_emerg("apple-pmp-thermal: cpu%u min_khz=%u max_khz=%u\n",
++				 policy->cpu, policy->min, policy->max);
++	}
++}
++
++/* Fail closed independently of the governor, including while the zone is off. */
++static int apple_pmp_guard(unsigned int level)
++{
++	unsigned int i;
++	int ret, err = 0;
++
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		struct apple_pmp_cluster *c = &pmp_thermal.clusters[i];
++
++		unsigned int low = c->policy->cpuinfo.min_freq;
++		unsigned int high = c->policy->cpuinfo.max_freq;
++		unsigned int power_level = pmp_thermal.power.level[i];
++		unsigned int effective;
++
++		if (!pmp_thermal.power.last_ns || ktime_get_ns() -
++		    pmp_thermal.power.last_ns > APPLE_PMP_POWER_STALE_NS)
++			power_level = 8;
++		effective = max(level, power_level);
++
++		/* QoS composes with user caps and governor cooling. Intermediate
++		 * requests are rounded down to supported OPPs by cpufreq.
++		 */
++		ret = freq_qos_update_request(&c->guard, effective ?
++			low + (high - low) * (8 - effective) / 8 :
++			FREQ_QOS_MAX_DEFAULT_VALUE);
++		if (ret < 0)
++			err = ret;
++	}
++	if (!err)
++		pmp_thermal.guard_level = level;
++	return err;
++}
++
++static int apple_pmp_sample(void)
++{
++	struct apple_pmp_snapshot snapshot;
++	struct apple_pmp_cooling *cooling = &pmp_thermal.cooling;
++	long value = 0;
++	bool was_confirmed;
++	unsigned int old_level, level, i;
++	int old_reason, channel = -1, ret, guard_ret;
++	const char *reason;
++
++	guard(mutex)(&pmp_thermal.lock);
++	old_level = pmp_thermal.guard_level;
++	old_reason = cooling->reason;
++	ret = apple_pmp_sample_all(&snapshot, &value);
++	was_confirmed = pmp_thermal.critical.confirmed;
++	apple_pmp_confirmation_sample(&pmp_thermal.critical, value, ret,
++				      snapshot.finished_ns);
++	apple_pmp_cooling_sample(cooling, snapshot.finished_ns, value, ret);
++	/* Capture governor demand before it releases a trip; the independent
++	 * QoS envelope then restores CPU capacity gradually. Convert the cooling
++	 * device's own state, not policy->max (which includes this guard).
++	 */
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		struct thermal_cooling_device *cdev = pmp_thermal.clusters[i].cdev;
++		unsigned long state;
++
++		if (cdev && cdev->max_state && !cdev->ops->get_cur_state(cdev, &state))
++			apple_pmp_cooling_observe(cooling, snapshot.finished_ns,
++				DIV_ROUND_UP(state * 8, cdev->max_state));
++	}
++	level = apple_pmp_cooling_level(cooling);
++	/* Never release startup/fault protection with disabled or unbound cooling. */
++	if (!pmp_thermal.enabled)
++		level = 8;
++	guard_ret = apple_pmp_guard(level);
++	if (guard_ret)
++		apple_pmp_guard(8);
++	for (i = 0; i < PMP_TEMP_CHANNELS; i++)
++		if (!snapshot.errors[i] && snapshot.values[i] == value) {
++			channel = i;
++			break;
++		}
++	switch (cooling->reason) {
++	case 0:
++		reason = "startup";
++		break;
++	case 1:
++		reason = "sensor";
++		break;
++	case 2:
++		reason = "measured-heat";
++		break;
++	case 3:
++		reason = "prediction";
++		break;
++	case 5:
++		reason = "recovery";
++		break;
++	default:
++		reason = "governor";
++		break;
++	}
++	if (old_level != pmp_thermal.guard_level || old_reason != cooling->reason)
++		pr_info_ratelimited("apple-pmp-thermal: decision ns=%llu mc=%ld channel=%d error=%d previous_mc=%ld dt_ns=%llu projected_mc=%ld reason=%s hard=%d prediction=%u level=%u qos_error=%d\n",
++			snapshot.finished_ns, value, channel, ret, cooling->previous_mc,
++			cooling->dt_ns, cooling->projected_mc, reason, cooling->hard,
++			cooling->prediction, pmp_thermal.guard_level, guard_ret);
++	pmp_thermal.cached_mc = value;
++	pmp_thermal.cached_error = ret ?: guard_ret;
++	if (ret) {
++		pr_warn_ratelimited("apple-pmp-thermal: sensor error %d; CPU minimum caps retained\n",
++				    ret);
++		return ret;
++	}
++	ret = guard_ret;
++	/* First real critical sample, before core poweroff. */
++	if (value >= APPLE_PMP_CRITICAL_MC && !pmp_thermal.critical_dumped) {
++		pmp_thermal.critical_dumped = true;
++		apple_pmp_critical_dump(&snapshot, "critical-sample", value, 0);
++	}
++	if (!was_confirmed && pmp_thermal.critical.confirmed)
++		apple_pmp_critical_dump(&snapshot, "critical-confirmed-third-sample", value, 0);
++	return ret;
++}
++
++/* Thermal-core/sysfs reads observe the last raw sample without changing the
++ * sample count, QoS guard, or governor cadence. The fast worker owns sampling.
++ */
++static int apple_pmp_get_temp(struct thermal_zone_device *zone, int *temp)
++{
++	guard(mutex)(&pmp_thermal.lock);
++	if (!pmp_thermal.cooling.last_ns ||
++	    ktime_get_ns() - pmp_thermal.cooling.last_ns > 500000000ULL)
++		return -EAGAIN;
++	if (pmp_thermal.cached_error)
++		return pmp_thermal.cached_error;
++	*temp = pmp_thermal.cached_mc;
++	return 0;
++}
++
++/* The thermal core calls .critical only on upward crossings. The poll
++ * worker also checks after every raw sample so sustained heat reaches sample 3.
++ * Preserve the raw temperature and the normal thermal-core poweroff path.
++ */
++static void apple_pmp_critical(struct thermal_zone_device *zone)
++{
++	bool shutdown = false;
++
++	mutex_lock(&pmp_thermal.lock);
++	if (pmp_thermal.critical.confirmed && !pmp_thermal.shutdown_requested) {
++		pmp_thermal.shutdown_requested = true;
++		shutdown = true;
++	}
++	mutex_unlock(&pmp_thermal.lock);
++	if (shutdown) {
++		pr_emerg("apple-pmp-thermal: three >=120 C samples at least 5 ms apart; requesting shutdown\n");
++		thermal_zone_device_critical(zone);
++	}
++}
++
++static void apple_pmp_poll_work(struct work_struct *work)
++{
++	u64 now;
++
++	apple_pmp_sample();
++	pmp_thermal.sample_count++;
++	apple_pmp_critical(pmp_thermal.zone);
++	now = ktime_get_ns();
++	if (now - pmp_thermal.governor_ns >= APPLE_PMP_GOVERNOR_NS) {
++		pmp_thermal.governor_ns = now;
++		pmp_thermal.governor_count++;
++		thermal_zone_device_update(pmp_thermal.zone, THERMAL_EVENT_UNSPECIFIED);
++	}
++}
++
++static enum hrtimer_restart apple_pmp_poll_timer(struct hrtimer *timer)
++{
++	/* Sampling/QoS may sleep, so never perform either in timer context.
++	 * One work item coalesces missed ticks; no burst of stale confirmations.
++	 */
++	queue_work(system_highpri_wq, &pmp_thermal.poll_work);
++	hrtimer_forward_now(timer, ms_to_ktime(APPLE_PMP_POLL_MS));
++	return HRTIMER_RESTART;
++}
++
++static int apple_pmp_change_mode(struct thermal_zone_device *zone,
++				 enum thermal_device_mode mode)
++{
++	guard(mutex)(&pmp_thermal.lock);
++	pmp_thermal.enabled = mode == THERMAL_DEVICE_ENABLED;
++	apple_pmp_cooling_init(&pmp_thermal.cooling);
++	return apple_pmp_guard(8);
++}
++
++static bool apple_pmp_should_bind(struct thermal_zone_device *zone,
++				  const struct thermal_trip *trip,
++				  struct thermal_cooling_device *cdev,
++				  struct cooling_spec *spec)
++{
++	unsigned int i;
++
++	if (trip->type != THERMAL_TRIP_PASSIVE)
++		return false;
++
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		struct apple_pmp_cluster *c = &pmp_thermal.clusters[i];
++
++		if (cdev != c->cdev)
++			continue;
++		spec->lower = 0;
++		spec->upper = cdev->max_state;
++		return true;
++	}
++	return false;
++}
++
++static const struct thermal_zone_device_ops apple_pmp_thermal_ops = {
++	.get_temp = apple_pmp_get_temp,
++	.critical = apple_pmp_critical,
++	.change_mode = apple_pmp_change_mode,
++	.should_bind = apple_pmp_should_bind,
++};
++
++static const struct thermal_trip apple_pmp_trips[] = {
++	{
++		.temperature = APPLE_PMP_PASSIVE_MC,
++		.hysteresis = APPLE_PMP_HYST_MC,
++		.type = THERMAL_TRIP_PASSIVE,
++	},
++	{
++		.temperature = APPLE_PMP_TARGET_MC,
++		.hysteresis = 4000,
++		.type = THERMAL_TRIP_PASSIVE,
++	},
++	{
++		.temperature = APPLE_PMP_CRITICAL_MC,
++		.type = THERMAL_TRIP_CRITICAL,
++	},
++};
++
++static const struct thermal_zone_params apple_pmp_params = {
++	.governor_name = "step_wise",
++	.no_hwmon = true, /* Keep the existing six-channel hwmon ABI. */
++};
++
++static int apple_pmp_check_bindings(struct thermal_trip *trip, void *data)
++{
++	struct thermal_zone_device *zone = data;
++	unsigned int i;
++
++	if (trip->type != THERMAL_TRIP_PASSIVE)
++		return 0;
++
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++)
++		if (!thermal_trip_is_bound_to_cdev(zone, trip, pmp_thermal.clusters[i].cdev))
++			return -ENODEV;
++	return 0;
++}
++
++/* Leaves every field reset, so a deferred setup can be attempted again. */
++static void apple_pmp_thermal_cleanup(void)
++{
++	unsigned int i;
++
++	/* Restore the cpufreq cap before this policy's own guard goes away. */
++	if (pmp_thermal.owner) {
++		for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++)
++			apple_soc_cpufreq_set_thermal_owner(pmp_thermal.clusters[i].policy,
++							    false);
++		pmp_thermal.owner = false;
++	}
++	if (pmp_thermal.power_polling) {
++		cancel_delayed_work_sync(&pmp_thermal.power_work);
++		pmp_thermal.power_polling = false;
++	}
++	if (pmp_thermal.power_hwmon) {
++		hwmon_device_unregister(pmp_thermal.power_hwmon);
++		pmp_thermal.power_hwmon = NULL;
++	}
++	if (pmp_thermal.polling) {
++		hrtimer_cancel(&pmp_thermal.poll_timer);
++		cancel_work_sync(&pmp_thermal.poll_work);
++		pmp_thermal.polling = false;
++	}
++	if (pmp_thermal.zone) {
++		thermal_zone_device_unregister(pmp_thermal.zone);
++		pmp_thermal.zone = NULL;
++	}
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		struct apple_pmp_cluster *c = &pmp_thermal.clusters[i];
++
++		cpufreq_cooling_unregister(c->cdev);
++		c->cdev = NULL;
++		if (freq_qos_request_active(&c->guard))
++			freq_qos_remove_request(&c->guard);
++		if (c->policy)
++			cpufreq_cpu_put(c->policy);
++		c->policy = NULL;
++	}
++
++	pmp_thermal.enabled = false;
++	pmp_thermal.ready = false;
++}
++
++static int apple_pmp_add_cluster(unsigned int index, unsigned int cpu,
++				 unsigned long members)
++{
++	struct apple_pmp_cluster *c = &pmp_thermal.clusters[index];
++	unsigned int n;
++	int ret;
++
++	c->policy = cpufreq_cpu_get(cpu);
++	if (!c->policy)
++		return -EPROBE_DEFER;
++	guard(cpufreq_policy_read)(c->policy);
++	for_each_possible_cpu(n)
++		if (cpumask_test_cpu(n, c->policy->related_cpus) !=
++		    (n < BITS_PER_LONG && !!(members & BIT(n))))
++			return -EINVAL;
++	if (!c->policy->freq_table)
++		return -EPROBE_DEFER;
++
++	ret = freq_qos_add_request(&c->policy->constraints, &c->guard,
++				   FREQ_QOS_MAX, c->policy->cpuinfo.min_freq);
++	if (ret < 0)
++		return ret;
++	c->cdev = cpufreq_cooling_register(c->policy);
++	if (IS_ERR(c->cdev)) {
++		ret = PTR_ERR(c->cdev);
++		c->cdev = NULL;
++		return ret;
++	}
++	return 0;
++}
++
++static int apple_pmp_thermal_setup(void)
++{
++	struct thermal_zone_device *zone;
++	unsigned int i;
++	int ret;
++
++	apple_pmp_power_init(&pmp_thermal.power);
++	apple_pmp_cooling_init(&pmp_thermal.cooling);
++	pmp_thermal.guard_level = 8;
++	ret = apple_pmp_add_cluster(0, 0, BIT(0) | GENMASK(9, 7));
++	if (ret)
++		goto fail;
++	ret = apple_pmp_add_cluster(1, 1, GENMASK(6, 1));
++	if (ret)
++		goto fail;
++	zone = thermal_zone_device_register_with_trips("apple-pmp-die", apple_pmp_trips,
++						       ARRAY_SIZE(apple_pmp_trips), NULL,
++						       &apple_pmp_thermal_ops, &apple_pmp_params,
++						       0, 0);
++	pmp_thermal.zone = zone;
++	if (IS_ERR(pmp_thermal.zone)) {
++		ret = PTR_ERR(pmp_thermal.zone);
++		pmp_thermal.zone = NULL;
++		goto fail;
++	}
++	/* Trip array is immutable; the binding query takes the zone lock itself. */
++	ret = for_each_thermal_trip(pmp_thermal.zone, apple_pmp_check_bindings,
++				    pmp_thermal.zone);
++	if (ret)
++		goto fail;
++	ret = thermal_zone_device_enable(pmp_thermal.zone);
++	if (ret)
++		goto fail;
++	pmp_thermal.power_hwmon = hwmon_device_register_with_info(
++		thermal_zone_device(pmp_thermal.zone),
++			"apple_pmp_power", NULL, &apple_pmp_power_chip, NULL);
++	if (IS_ERR(pmp_thermal.power_hwmon)) {
++		ret = PTR_ERR(pmp_thermal.power_hwmon);
++		pmp_thermal.power_hwmon = NULL;
++		goto fail;
++	}
++	pmp_thermal.power_polling = true;
++	schedule_delayed_work(&pmp_thermal.power_work, msecs_to_jiffies(500));
++	pmp_thermal.polling = true;
++	hrtimer_start(&pmp_thermal.poll_timer, ms_to_ktime(APPLE_PMP_POLL_MS),
++		      HRTIMER_MODE_REL);
++	/* Both guards start at the minimum frequency: hand over the cpufreq cap. */
++	pmp_thermal.owner = true;
++	for (i = 0; i < ARRAY_SIZE(pmp_thermal.clusters); i++) {
++		ret = apple_soc_cpufreq_set_thermal_owner(pmp_thermal.clusters[i].policy,
++							  true);
++		if (ret)
++			goto fail;
++	}
++	pr_info("apple-pmp-thermal: J713 provisional policy: CPU cooling from 106 C, target 110 C, full protection 115 C, three >=120 C samples for shutdown, 5 ms sampling/100 ms governor, CPU rail power budget\n");
++	pmp_thermal.ready = true;
++	return 0;
++fail:
++	apple_pmp_thermal_cleanup();
++	return ret;
++}
++
++static void apple_pmp_thermal_setup_work(struct work_struct *work)
++{
++	int ret = apple_pmp_thermal_setup();
++
++	/* cpufreq policy creation is not a driver bind, so it need not retrigger
++	 * deferred platform probes. Retry only this startup dependency while
++	 * cpufreq keeps its unmanaged QoS ceiling and no ownership is claimed.
++	 */
++	if (ret == -EPROBE_DEFER)
++		schedule_delayed_work(&pmp_thermal.setup_work, HZ);
++	else if (ret)
++		pr_err("apple-pmp-thermal: setup failed: %d; cpufreq ownership retained\n", ret);
++}
++
++static int apple_pmp_thermal_probe(struct platform_device *pdev)
++{
++	const struct apple_pmp_sensor_data *sensors = dev_get_platdata(&pdev->dev);
++
++	/* Only this board's sensor topology and operating policy are qualified. */
++	if (!of_machine_is_compatible("apple,j713"))
++		return -ENODEV;
++	if (!sensors || !sensors->read)
++		return -EINVAL;
++	pmp_thermal.sensors = sensors;
++	pmp_thermal.cached_error = -EAGAIN;
++	pmp_thermal.power_error = -EAGAIN;
++	pmp_thermal.critical = (struct apple_pmp_confirmation) {};
++	pmp_thermal.shutdown_requested = false;
++	pmp_thermal.critical_dumped = false;
++	pmp_thermal.governor_ns = 0;
++	INIT_DELAYED_WORK(&pmp_thermal.setup_work, apple_pmp_thermal_setup_work);
++	INIT_DELAYED_WORK(&pmp_thermal.power_work, apple_pmp_power_work);
++	INIT_WORK(&pmp_thermal.poll_work, apple_pmp_poll_work);
++	hrtimer_setup(&pmp_thermal.poll_timer, apple_pmp_poll_timer,
++		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	schedule_delayed_work(&pmp_thermal.setup_work, 0);
++	return 0;
++}
++
++static void apple_pmp_thermal_remove(struct platform_device *pdev)
++{
++	cancel_delayed_work_sync(&pmp_thermal.setup_work);
++	apple_pmp_thermal_cleanup();
++}
++
++static struct platform_driver apple_pmp_thermal_driver = {
++	.probe = apple_pmp_thermal_probe,
++	.remove = apple_pmp_thermal_remove,
++	.driver = {
++		.name = "apple-pmp-thermal",
++	},
++};
++module_platform_driver(apple_pmp_thermal_driver);
++MODULE_ALIAS("platform:apple-pmp-thermal");
++
++MODULE_DESCRIPTION("Apple J713 PMP package CPU thermal policy");
++MODULE_LICENSE("Dual MIT/GPL");
+diff --git a/include/linux/soc/apple/pmp-cooling.h b/include/linux/soc/apple/pmp-cooling.h
+new file mode 100644
+index 00000000000000..915686472cf790
+--- /dev/null
++++ b/include/linux/soc/apple/pmp-cooling.h
+@@ -0,0 +1,161 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef _LINUX_SOC_APPLE_PMP_COOLING_H
++#define _LINUX_SOC_APPLE_PMP_COOLING_H
++
++#include <linux/types.h>
++
++/* J713 development backstop, shared by CPU QoS and the G16 firmware ceiling.
++ * The thermal governor runs separately. Inputs are validated package mC and
++ * monotonic ns. Sampling more often must never accelerate prediction/release.
++ * None of these thresholds are claimed as Apple's hardware safety limits.
++ */
++/* Existing provisional J713 development policy. macOS reached
++ * 115.25 C normally; that observation does not identify its emergency trip.
++ * Begin ordinary regulation below the target and strengthen the independent
++ * cooling envelope near it. Emergency shutdown is a separate, provisional
++ * policy in pmp-emergency-policy.h; none of these values establishes it.
++ */
++#define APPLE_PMP_PASSIVE_MC 106000
++#define APPLE_PMP_TARGET_MC 110000
++#define APPLE_PMP_BACKSTOP_MC 108000
++#define APPLE_PMP_FULL_COOLING_MC 115000
++#define APPLE_PMP_RELEASE_MC 106000
++
++struct apple_pmp_cooling {
++	unsigned long long last_ns, good_ns, anchor_ns, release_ns;
++	unsigned long long dt_ns;
++	long anchor_mc, previous_mc, projected_mc;
++	unsigned int good_reads, prediction, level;
++	bool hard, anchor_valid;
++	int reason; /* 0 startup, 1 sensor, 2 measured heat, 3 prediction, 4 governor, 5 recovery */
++};
++
++static inline void apple_pmp_cooling_init(struct apple_pmp_cooling *s)
++{
++	*s = (struct apple_pmp_cooling) { .level = 8, .hard = true };
++}
++
++static inline unsigned int apple_pmp_cooling_level(const struct apple_pmp_cooling *s)
++{
++	return s->level;
++}
++
++/* Retain a governor restriction in the release envelope. Otherwise a trip
++ * crossing could drop the governor from maximum cooling to zero in one tick,
++ * bypassing the backstop's gradual recovery entirely.
++ */
++static inline void apple_pmp_cooling_observe(struct apple_pmp_cooling *s,
++		unsigned long long now, unsigned int level)
++{
++	if (level > 8)
++		level = 8;
++	if (level > s->level) {
++		s->level = level;
++		s->release_ns = now;
++		s->reason = 4;
++	}
++}
++
++/* A measured rise uses intermediate states: 108 C -> 1, 112 C -> 5, 115 C -> 8.
++ * This remains effective even before the thermal governor has run.
++ */
++static inline unsigned int apple_pmp_heat_level(long mc)
++{
++	return mc < APPLE_PMP_BACKSTOP_MC ? 0 :
++		mc >= APPLE_PMP_FULL_COOLING_MC ? 8 :
++		(mc - APPLE_PMP_BACKSTOP_MC) / 1000 + 1;
++}
++
++static inline void apple_pmp_cooling_sample(struct apple_pmp_cooling *s,
++		unsigned long long now, long mc, int error)
++{
++	unsigned long long dt = now - s->anchor_ns;
++	unsigned int target;
++	bool trend_due = false;
++
++	s->last_ns = now;
++	if (error || mc >= APPLE_PMP_FULL_COOLING_MC) {
++		s->level = 8;
++		s->hard = true;
++		s->reason = error ? 1 : 2;
++		s->good_reads = 0;
++		s->good_ns = now;
++		s->release_ns = now;
++		s->anchor_valid = false;
++		s->prediction = 0;
++		s->dt_ns = 0;
++		s->projected_mc = error ? 0 : mc;
++		return;
++	}
++
++	if (s->hard) {
++		/* Startup/fault recovery needs 200 ms of cool, valid observations.
++		 * Repeated sysfs or submission reads cannot count faster than time.
++		 */
++		if (mc < APPLE_PMP_BACKSTOP_MC) {
++			if (now - s->good_ns >= 20000000ULL) {
++				s->good_ns = now;
++				if (s->good_reads < 10)
++					s->good_reads++;
++			}
++			if (s->good_reads == 10)
++				s->hard = false;
++		} else {
++			s->good_reads = 0;
++			s->good_ns = now;
++		}
++		/* Exit protection gradually, not minimum -> maximum in one call. */
++		s->release_ns = now;
++		if (s->hard)
++			return;
++	}
++
++	if (!s->anchor_valid || dt >= 250000000ULL) {
++		/* No slope across idle gaps, faults or power-gated observations. */
++		s->anchor_valid = true;
++		s->anchor_ns = now;
++		s->anchor_mc = mc;
++		s->previous_mc = mc;
++		s->dt_ns = 0;
++		s->projected_mc = mc;
++		s->prediction = 0;
++	} else if (dt >= 50000000ULL) {
++		long rise = 0;
++
++		s->previous_mc = s->anchor_mc;
++		s->dt_ns = dt;
++		if (mc > s->anchor_mc)
++			rise = (mc - s->anchor_mc) * 100000000LL / dt;
++		/* A short excursion is not a measured 170 C die. Forecasts only
++		 * request a gradual step, with at most 2 C of anticipatory headroom.
++		 */
++		if (rise > 2000)
++			rise = 2000;
++		s->projected_mc = mc + rise;
++		s->prediction = mc >= APPLE_PMP_BACKSTOP_MC - 3000 ? apple_pmp_heat_level(s->projected_mc) : 0;
++		s->anchor_ns = now;
++		s->anchor_mc = mc;
++		trend_due = true;
++	}
++
++	target = apple_pmp_heat_level(mc);
++	if (target > s->level) {
++		s->level = target;
++		s->reason = 2;
++		s->release_ns = now;
++	} else if (trend_due && s->prediction > s->level) {
++		s->level++;
++		s->reason = 3;
++		s->release_ns = now;
++	} else if (mc < APPLE_PMP_RELEASE_MC && s->prediction == 0 &&
++		   now - s->release_ns >= 200000000ULL) {
++		if (s->level)
++			s->level--;
++		s->release_ns = now;
++		s->reason = s->level ? 5 : 4;
++	} else if (mc >= APPLE_PMP_RELEASE_MC) {
++		/* Require a continuous cool interval before releasing a step. */
++		s->release_ns = now;
++	}
++}
++#endif
+diff --git a/include/linux/soc/apple/pmp-emergency-policy.h b/include/linux/soc/apple/pmp-emergency-policy.h
+new file mode 100644
+index 00000000000000..2dc107a1cc0740
+--- /dev/null
++++ b/include/linux/soc/apple/pmp-emergency-policy.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef _LINUX_SOC_APPLE_PMP_EMERGENCY_POLICY_H
++#define _LINUX_SOC_APPLE_PMP_EMERGENCY_POLICY_H
++
++/*
++ * Historical J713 development shutdown policy. This is NOT a temperature
++ * limit obtained from Apple firmware, ADT or qualified hardware evidence.
++ * Keep it separate from ordinary cooling tuning and retain its existing
++ * restriction until a T8132 emergency contract is qualified; removing it
++ * would silently weaken the currently deployed backstop. A working desktop
++ * or an observed macOS temperature does not qualify an emergency threshold.
++ */
++#define APPLE_PMP_CRITICAL_MC 120000
++
++#endif
+diff --git a/include/linux/soc/apple/pmp-power-policy.h b/include/linux/soc/apple/pmp-power-policy.h
+new file mode 100644
+index 00000000000000..4213a6af660f85
+--- /dev/null
++++ b/include/linux/soc/apple/pmp-power-policy.h
+@@ -0,0 +1,161 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef _LINUX_SOC_APPLE_PMP_POWER_POLICY_H
++#define _LINUX_SOC_APPLE_PMP_POWER_POLICY_H
++
++/* Provisional J713 measured-rail feedback, not Apple's power model/TDP.
++ * Domains are PP0b (P CPU), PPbb (E CPU), PP1b (GPU). Their sum excludes
++ * other SoC/system rails; independent die protection remains mandatory.
++ * Slow temperature feedback adapts sustainable watts. A bounded energy bucket
++ * permits bursts; neither a cool die spike nor missing telemetry refills it.
++ * Units: mW, mJ, mC, monotonic ns. No floating point or per-OPP watt guesses.
++ */
++#define APPLE_PMP_BURST_MJ 600000LL
++#define APPLE_PMP_BURST_MW 20000
++#define APPLE_PMP_POWER_STALE_NS 3000000000ULL
++
++struct apple_pmp_power_policy {
++	unsigned long long last_ns, change_ns, tune_ns;
++	long long credit_mj;
++	int sustainable_mw, allowed_mw, total_mw, filtered_mc;
++	unsigned int level[3], next_release, good;
++	bool initialized, fault;
++};
++
++/* SMC little-endian IEEE binary32 Watts -> mW. Reject NaN/Inf, negative,
++ * or >50 W per rail rather than overflowing or interpreting errors as idle.
++ */
++static inline bool apple_pmp_power_decode(unsigned int bits, unsigned int *mw)
++{
++	unsigned int exponent = (bits >> 23) & 255;
++	unsigned long long value;
++
++	if ((bits >> 31) || exponent > 132)
++		return false;
++	if (exponent < 100) {
++		*mw = 0;
++		return true;
++	}
++	value = ((bits & 0x7fffff) | 0x800000ULL) * 1000;
++	value >>= 150 - exponent;
++	if (value > 50000)
++		return false;
++	*mw = value;
++	return true;
++}
++
++static inline void apple_pmp_power_init(struct apple_pmp_power_policy *s)
++{
++	*s = (struct apple_pmp_power_policy) {
++		.sustainable_mw = 8000, .allowed_mw = 8000,
++		.level = {8, 8, 8}, .fault = true,
++	};
++}
++
++static inline void apple_pmp_power_fail(struct apple_pmp_power_policy *s)
++{
++	for (unsigned int i = 0; i < 3; i++)
++		s->level[i] = 8;
++	s->fault = true;
++	s->good = 0;
++}
++
++static inline void apple_pmp_power_sample(struct apple_pmp_power_policy *s,
++		unsigned long long now, const unsigned int mw[3], int mc, int error)
++{
++	unsigned long long dt = s->last_ns ? now - s->last_ns : 0;
++	unsigned long long ms = dt / 1000000ULL;
++	/* Prefer graphics throughput when all domains contend. These are policy
++	 * weights, not watt estimates/reservations: idle GPU capacity remains
++	 * available to CPUs. Equal P/E weights, 4x GPU weight, round-robin ties.
++	 */
++	static const unsigned int weight[3] = {1, 1, 4};
++	unsigned int i, chosen = 3;
++	bool gap = dt > 2000000000ULL;
++
++	if (error || gap) {
++		apple_pmp_power_fail(s);
++		s->last_ns = now;
++		return;
++	}
++	/* Repeated reads do not advance the control clock or confirmation. */
++	if (s->last_ns && dt < 400000000ULL)
++		return;
++	s->last_ns = now;
++	s->total_mw = mw[0] + mw[1] + mw[2];
++	if (!s->initialized) {
++		s->initialized = true;
++		s->credit_mj = mc < 75000 ? APPLE_PMP_BURST_MJ : 0;
++		s->filtered_mc = mc;
++		s->tune_ns = now;
++	}
++	if (++s->good > 3)
++		s->good = 3;
++	if (s->good < 3)
++		return;
++	s->fault = false;
++	s->filtered_mc += (mc - s->filtered_mc) * (long long)ms / (long long)(5000 + ms);
++	if (s->total_mw > s->sustainable_mw)
++		s->credit_mj -= (s->total_mw - s->sustainable_mw) * (long long)ms / 1000;
++	else if (mc < 75000)
++		s->credit_mj += (s->sustainable_mw - s->total_mw) * (long long)ms / 1000;
++	if (s->credit_mj < 0)
++		s->credit_mj = 0;
++	if (s->credit_mj > APPLE_PMP_BURST_MJ)
++		s->credit_mj = APPLE_PMP_BURST_MJ;
++	/* Do not infer sustainable watts from a permitted short hot burst.
++	 * Once its energy is spent, regulate toward 85 C with a 3 C deadband.
++	 */
++	if (now - s->tune_ns >= 2000000000ULL) {
++		s->tune_ns = now;
++		if (!s->credit_mj) {
++			if (s->filtered_mc > 88000)
++				s->sustainable_mw -= (s->filtered_mc - 85000) / 20;
++			else if (s->filtered_mc < 82000 &&
++				 (s->level[0] || s->level[1] || s->level[2]))
++				s->sustainable_mw += 125;
++			if (s->sustainable_mw < 4000)
++				s->sustainable_mw = 4000;
++			if (s->sustainable_mw > 16000)
++				s->sustainable_mw = 16000;
++		}
++	}
++	/* Spend at most the remaining energy in the next one-second window.
++	 * This tapers the final burst instead of overspending a tiny last credit.
++	 */
++	s->allowed_mw = s->sustainable_mw +
++		(s->credit_mj < APPLE_PMP_BURST_MW - s->sustainable_mw ?
++		 s->credit_mj : APPLE_PMP_BURST_MW - s->sustainable_mw);
++	if (now - s->change_ns < 1000000000ULL)
++		return;
++	if (s->total_mw > s->allowed_mw + 500) {
++		/* Restrict the largest weight-normalized measured consumer that can yield.
++		 * An idle CPU does not reserve watts that the GPU could use (or vice versa).
++		 */
++		for (i = 0; i < 3; i++)
++			if (s->level[i] < 8 && (chosen == 3 ||
++			    mw[i] * weight[chosen] > mw[chosen] * weight[i]))
++				chosen = i;
++		if (chosen < 3)
++			s->level[chosen]++;
++		s->change_ns = now;
++	} else if (s->total_mw < s->allowed_mw - 1000) {
++		/* Release the largest weighted restriction, round-robin on ties.
++		 * This restores graphics headroom before spending it on CPU stress.
++		 * Fault recovery still restores only one step per elapsed interval.
++		 */
++		for (i = 0; i < 3; i++) {
++			unsigned int candidate = (s->next_release + i) % 3;
++
++			if (s->level[candidate] && (chosen == 3 ||
++			    s->level[candidate] * weight[candidate] >
++			    s->level[chosen] * weight[chosen]))
++				chosen = candidate;
++		}
++		if (chosen < 3) {
++			s->level[chosen]--;
++			s->next_release = (chosen + 1) % 3;
++		}
++		s->change_ns = now;
++	}
++}
++#endif
+

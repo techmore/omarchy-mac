@@ -1,0 +1,1244 @@
+From: Eryk Wieliczko <eryk@wieliczko.ninja>
+
+Subject: [WIP] soc: forward-port M4 Air PMP graphics ownership to WIP5
+
+Adapted from aurora-silicon/linux PR #367 patch 04/13, commit 054ad2956935422ac4df571f474cdf12cb454832. Resolve WIP5 PMP report and Makefile context; omit J713 platform-data hunks absent from this mini draft. This retains J713 admission checks and does not qualify or enable J773g.
+
+diff --git a/drivers/pmdomain/apple/pmp-report.c b/drivers/pmdomain/apple/pmp-report.c
+index eea13982d973811144c61dc664643e8d609d152f..438ff7b781dc1a19da8cbaca14cc56df0fe4c75b 100644
+--- a/drivers/pmdomain/apple/pmp-report.c
++++ b/drivers/pmdomain/apple/pmp-report.c
+@@ -279,6 +279,8 @@ int apple_pmp_report_wait_supplier_ready(struct device *supplier, unsigned int t
+ 	struct platform_device *pdev;
+ 	struct apple_pmp_report *rep;
+ 	u64 status;
++	bool t8132 = of_machine_is_compatible("apple,j713") &&
++		of_device_is_compatible(supplier->of_node, "apple,t8132-pmp-v2");
+ 	int ret;
+ 
+ 	/* A declared report always takes the existing native25 path below. */
+@@ -287,7 +289,8 @@ int apple_pmp_report_wait_supplier_ready(struct device *supplier, unsigned int t
+ 			return apple_pmp_report_wait_t8122_14(supplier, timeout_ms);
+ 		return apple_pmp_report_wait_t6030_14(supplier, timeout_ms);
+ 	}
+-	if (!np || !of_device_is_compatible(np, "apple,j613-25g83-pmp-report")) {
++	if (!np || !of_device_is_compatible(np, t8132 ?
++		"apple,t8132-pmp-v2-report" : "apple,j613-25g83-pmp-report")) {
+ 		of_node_put(np);
+ 		return -ENODEV;
+ 	}
+@@ -305,7 +308,8 @@ int apple_pmp_report_wait_supplier_ready(struct device *supplier, unsigned int t
+ 		ret = -EPROBE_DEFER;
+ 	else
+ 		ret = readq_poll_timeout(rep->base + rep->offsets->status, status,
+-					status == PMP_REPORT_READY, 1000, timeout_ms * 1000);
++					t8132 ? (status & PMP_REPORT_READY) : status == PMP_REPORT_READY,
++					1000, timeout_ms * 1000);
+ 	device_unlock(&pdev->dev);
+ 	put_device(&pdev->dev);
+ 	return ret;
+diff --git a/drivers/soc/apple/Makefile b/drivers/soc/apple/Makefile
+index 19090976481fc6abb628d4ea830517eca9f59c6f..01690a2f6eea8f9ea914959b0f8104ac592eb4eb 100644
+--- a/drivers/soc/apple/Makefile
++++ b/drivers/soc/apple/Makefile
+@@ -45,7 +45,7 @@ apple-sep-y := sep.o hwrng_shim.o store_shim.o bio_shim.o sha_shim.o \
+ 		pm_shim.o diag_shim.o
+ 
+ obj-$(CONFIG_APPLE_PMP) += apple-pmp.o
+-apple-pmp-y := pmp.o pmp-export.o pmp-telemetry.o
++apple-pmp-y := pmp.o pmp-export.o pmp-display.o pmp-telemetry.o
+ 
+ obj-$(CONFIG_APPLE_MCC) += apple-mcc.o
+ apple-mcc-y := mcc.o
+diff --git a/drivers/soc/apple/pmp-display.c b/drivers/soc/apple/pmp-display.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..fed0b13bdfe83ec23bfa27b358ad0107f9ce9194
+--- /dev/null
++++ b/drivers/soc/apple/pmp-display.c
+@@ -0,0 +1,443 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/* Retained J713 DISP/AGX votes through the existing Rust PMP owner.
++ * Exactly one untagged request is in flight; invalid replies fail the epoch.
++ */
++#include <linux/bits.h>
++#include <linux/completion.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/workqueue.h>
++#include <linux/unaligned.h>
++#include <linux/soc/apple/pmp-display.h>
++
++/* AGX: command 0x0f, logical device 5, state 1. The reply carries no tag. */
++#define PMP_AGX_REQUEST		0x0020f50100000000ULL
++#define PMP_DISP_REQUEST	0x0020f80100000000ULL
++#define PMP_POWER_REPLY		0x0021000000000000ULL
++#define PMP_ENDPOINT		0x20
++
++enum pmp_power_kind {
++	PMP_POWER_NONE,
++	PMP_POWER_AGX,
++	PMP_POWER_DISP,
++	PMP_POWER_COUNT,
++};
++
++/* Caller holds the bridge lock. Errors permanently invalidate untagged replies. */
++struct pmp_power_vote {
++	/* Ambiguous untagged replies close admission, not accepted votes. */
++	int error;
++	/* A failed PMP owner invalidates every accepted vote as well. */
++	int provider_error;
++	enum pmp_power_kind pending;
++	bool held[PMP_POWER_COUNT];
++};
++
++static void pmp_vote_fail(struct pmp_power_vote *s, int error)
++{
++	if (!s->error)
++		s->error = error < 0 ? error : -EIO;
++	s->pending = PMP_POWER_NONE;
++}
++
++/* The Rust owner latches every ambiguous transaction as a provider failure.
++ * An error without that latch happened before transmission (for example a
++ * supplier that has not probed yet); release only the unpublished request.
++ */
++static void pmp_vote_send_failed(struct pmp_power_vote *s)
++{
++	if (s->provider_error)
++		pmp_vote_fail(s, s->provider_error);
++	else
++		s->pending = PMP_POWER_NONE;
++}
++
++/* One means send the request, zero means the same retained vote is held. */
++static int pmp_vote_begin(struct pmp_power_vote *s, enum pmp_power_kind kind)
++{
++	if (kind <= PMP_POWER_NONE || kind >= PMP_POWER_COUNT)
++		return -EINVAL;
++	if (s->provider_error)
++		return s->provider_error;
++	if (s->held[kind])
++		return 0;
++	if (s->error)
++		return s->error;
++	if (s->pending)
++		return -EBUSY;
++	s->pending = kind;
++	return 1;
++}
++
++/* Accepted votes are retained even if a different untagged request fails. */
++static int pmp_vote_check(struct pmp_power_vote *s, enum pmp_power_kind kind)
++{
++	if (s->provider_error)
++		return s->provider_error;
++	if (s->held[kind])
++		return 0;
++	return s->error ?: -ENODEV;
++}
++
++/* Caller arbitrates reply and timeout while holding the vote lock. */
++static int pmp_vote_finish(struct pmp_power_vote *s, enum pmp_power_kind kind)
++{
++	int ret = pmp_vote_check(s, kind);
++
++	if (ret == -ENODEV) {
++		pmp_vote_fail(s, -ETIMEDOUT);
++		ret = -ETIMEDOUT;
++	}
++	return ret;
++}
++
++static void pmp_vote_reply(struct pmp_power_vote *s, u8 endpoint, u64 word)
++{
++	if (s->error)
++		return;
++	if (!s->pending || endpoint != PMP_ENDPOINT || word != PMP_POWER_REPLY) {
++		pmp_vote_fail(s, -EPROTO);
++		return;
++	}
++	s->held[s->pending] = true;
++	s->pending = PMP_POWER_NONE;
++}
++
++static inline bool j713_disp_table(const void *data, size_t size)
++{
++	const u8 *p = data;
++
++	return p && size == 34 * 0x7c && get_unaligned_le32(p + 15 * 0x7c) == 8 &&
++		!memcmp(p + 15 * 0x7c + 0x74, "DISP\0\0\0\0", 8);
++}
++
++static inline bool j713_agx_table(const void *data, size_t size)
++{
++	const u8 *p = data;
++	unsigned int offset;
++	u32 expected;
++
++	if (!p || size != 34 * 0x7c)
++		return false;
++	p += 12 * 0x7c;
++	/* Qualified raw identity fields, not inferred meanings or writable controls. */
++	for (offset = 0; offset <= 0x70; offset += 4) {
++		switch (offset) {
++		case 0: expected = 5; break;
++		case 4: expected = 0x4746585f; break;
++		case 8: expected = 3; break;
++		case 0xc: case 0x1c: case 0x2c: expected = 2; break;
++		default: expected = 0; break;
++		}
++		if (get_unaligned_le32(p + offset) != expected)
++			return false;
++	}
++	return !memcmp(p + 0x74, "AGX\0\0\0\0\0", 8);
++}
++
++struct apple_pmp_display {
++	struct device *dev;
++	struct device_driver *driver;
++	const void *cookie;
++	int (*send)(const void *, u64);
++	struct mutex request;
++	spinlock_t lock;
++	struct completion reply;
++	struct pmp_power_vote vote;
++	struct device_link *link[PMP_POWER_COUNT];
++	bool agx_table_valid;
++};
++
++/* One qualified supplier; published once, never freed during its epoch. */
++static struct apple_pmp_display *pmp_display;
++static DEFINE_MUTEX(pmp_display_registration);
++
++bool apple_pmp_display_retained_board(void)
++{
++	return apple_pmp_j713_board();
++}
++
++/* The qualified loader publishes the existing PMP through its alias. */
++static struct device_node *pmp_bridge_node(void)
++{
++	return of_find_node_by_path("pmp");
++}
++
++struct apple_pmp_display *apple_pmp_display_register(struct device *dev,
++		const void *cookie, int (*send)(const void *, u64))
++{
++	struct apple_pmp_display *p = NULL;
++	struct device_node *node, *qualified;
++	const void *table;
++	int size;
++	bool match, j713 = apple_pmp_j713_board();
++
++	if (!j713 || !dev->of_node ||
++	    !of_device_is_compatible(dev->of_node,
++		"apple,t8132-pmp-v2"))
++		return NULL;
++	node = pmp_bridge_node();
++	match = node == dev->of_node;
++	of_node_put(node);
++	if (j713) {
++		qualified = of_find_node_by_path("/soc/pmp@380500000");
++		match = match && qualified == dev->of_node;
++		of_node_put(qualified);
++	}
++	/* J713 has a qualified fixed table shape. */
++	table = of_get_property(dev->of_node, "apple,tunable-soc-device", &size);
++	if (!match || !of_property_present(dev->of_node, "apple,tunable-soc-device") ||
++	    !cookie || !send || (j713 && !j713_disp_table(table, size)))
++		return NULL;
++	mutex_lock(&pmp_display_registration);
++	if (pmp_display)
++		goto out;
++	p = kzalloc(sizeof(*p), GFP_KERNEL);
++	if (!p)
++		goto out;
++	p->dev = get_device(dev);
++	p->driver = dev->driver;
++	p->cookie = cookie;
++	p->send = send;
++	p->agx_table_valid = !j713 || j713_agx_table(table, size);
++	mutex_init(&p->request);
++	spin_lock_init(&p->lock);
++	init_completion(&p->reply);
++	/* The bridge has no teardown: keep it and the PMP until reboot. */
++	__module_get(THIS_MODULE);
++	pm_runtime_get_noresume(dev);
++	smp_store_release(&pmp_display, p);
++	dev_info(dev, "%s PMP vote bridge ready; retained existing PMP owner\n",
++		 j713 ? "J713" : "J514S");
++out:
++	mutex_unlock(&pmp_display_registration);
++	return p;
++}
++
++void apple_pmp_display_fail(struct apple_pmp_display *p, int error)
++{
++	unsigned long flags;
++
++	if (!p)
++		return;
++	spin_lock_irqsave(&p->lock, flags);
++	if (!p->vote.provider_error)
++		p->vote.provider_error = error < 0 ? error : -EIO;
++	pmp_vote_fail(&p->vote, p->vote.provider_error);
++	spin_unlock_irqrestore(&p->lock, flags);
++	complete_all(&p->reply);
++}
++
++bool apple_pmp_display_receive(struct apple_pmp_display *p, u8 endpoint, u64 word)
++{
++	unsigned long flags;
++
++	if (!p || ((word >> 48) & 0xff) != 0x21)
++		return false; /* Normal registry traffic belongs to pmp-core.rs. */
++	spin_lock_irqsave(&p->lock, flags);
++	/* The waiter arbitrates timeout under this same lock. An accepted
++	 * reply must not be overwritten by the waiter reaching its deadline.
++	 */
++	pmp_vote_reply(&p->vote, endpoint, word);
++	spin_unlock_irqrestore(&p->lock, flags);
++	complete_all(&p->reply);
++	return true; /* This is a reply; never send an ACK for it. */
++}
++
++static struct apple_pmp_display *pmp_power_consumer(struct device *consumer,
++						    enum pmp_power_kind kind)
++{
++	struct apple_pmp_display *p = smp_load_acquire(&pmp_display);
++	struct device_node *pmp, *supplier;
++	bool match;
++
++	if (apple_pmp_j713_board()) {
++		/* Both consumers must name the exact boot-profile node. */
++		if ((kind != PMP_POWER_AGX && kind != PMP_POWER_DISP) || !consumer->of_node ||
++		    !of_device_is_compatible(consumer->of_node,
++			kind == PMP_POWER_AGX ? "apple,agx-t8132" : "apple,t8132-dcp"))
++			return ERR_PTR(-ENODEV);
++		pmp = of_find_node_by_path(kind == PMP_POWER_AGX ? "gpu" : "dcp");
++		match = pmp == consumer->of_node;
++		of_node_put(pmp);
++		if (!match)
++			return ERR_PTR(-ENODEV);
++	} else {
++		return ERR_PTR(-ENODEV);
++	}
++	if (kind == PMP_POWER_AGX) {
++		pmp = of_parse_phandle(consumer->of_node, "apple,pmp", 0);
++		supplier = pmp_bridge_node();
++		match = pmp && supplier == pmp;
++		of_node_put(pmp);
++		of_node_put(supplier);
++		if (!match || (p && !p->agx_table_valid))
++			return ERR_PTR(-ENODEV);
++	}
++	return p ? p : ERR_PTR(-EPROBE_DEFER);
++}
++
++/* Called during consumer probe, so device-link publication cannot race suspend. */
++static int pmp_power_prepare(struct device *consumer, enum pmp_power_kind kind)
++{
++	struct apple_pmp_display *p = pmp_power_consumer(consumer, kind);
++	struct platform_device *pdev;
++	struct device_node *np;
++	struct device_link *link;
++	int ret = -EPROBE_DEFER;
++
++	if (IS_ERR(p) && PTR_ERR(p) != -EPROBE_DEFER)
++		return PTR_ERR(p);
++	np = pmp_bridge_node();
++	if (!np)
++		return -ENODEV;
++	pdev = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!pdev)
++		return -EPROBE_DEFER;
++	device_lock(&pdev->dev);
++	if (!pdev->dev.driver || strcmp(pdev->dev.driver->name, "apple_pmp") ||
++	    !dev_get_drvdata(&pdev->dev))
++		goto out;
++	p = smp_load_acquire(&pmp_display);
++	if (p && p->link[kind]) {
++		ret = 0;
++		goto out;
++	}
++	/* Allocate the fallible link before publishing/pinning the lazy provider. */
++	link = device_link_add(consumer, &pdev->dev, DL_FLAG_STATELESS);
++	if (!link) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	/* Rust checks the actual drvdata type; no provider exists before full binding. */
++	p = apple_pmp_display_bound_owner(&pdev->dev);
++	if (!p || (kind == PMP_POWER_AGX && !p->agx_table_valid)) {
++		device_link_del(link);
++		ret = -ENODEV;
++		goto out;
++	}
++	mutex_lock(&p->request);
++	p->link[kind] = link;
++	ret = 0;
++	mutex_unlock(&p->request);
++out:
++	device_unlock(&pdev->dev);
++	put_device(&pdev->dev);
++	return ret;
++}
++
++static int pmp_power_check(struct device *consumer, enum pmp_power_kind kind)
++{
++	struct apple_pmp_display *p = pmp_power_consumer(consumer, kind);
++	unsigned long flags;
++	int ret;
++
++	if (IS_ERR(p))
++		return PTR_ERR(p);
++	spin_lock_irqsave(&p->lock, flags);
++	ret = pmp_vote_check(&p->vote, kind);
++	spin_unlock_irqrestore(&p->lock, flags);
++	return ret;
++}
++
++static int pmp_power_get(struct device *consumer, enum pmp_power_kind kind)
++{
++	struct apple_pmp_display *p = pmp_power_consumer(consumer, kind);
++	u64 request = kind == PMP_POWER_AGX ? PMP_AGX_REQUEST : PMP_DISP_REQUEST;
++	unsigned long flags;
++	int ret;
++
++	if (IS_ERR(p))
++		return PTR_ERR(p);
++	device_lock(p->dev);
++	mutex_lock(&p->request);
++	if (p->dev->driver != p->driver || !dev_get_drvdata(p->dev)) {
++		ret = -ENODEV;
++		apple_pmp_display_fail(p, ret);
++		goto out;
++	}
++	if (!p->link[kind]) {
++		ret = -ENODEV;
++		goto out;
++	}
++	spin_lock_irqsave(&p->lock, flags);
++	/* Reset before publishing pending: an immediate reply must not be lost. */
++	reinit_completion(&p->reply);
++	ret = pmp_vote_begin(&p->vote, kind);
++	spin_unlock_irqrestore(&p->lock, flags);
++	if (ret <= 0)
++		goto out;
++	/* The shared PMP owner serializes requests, checks readiness and waits
++	 * for the exact firmware reply before returning success. No second
++	 * receiver may correlate that same untagged stream independently.
++	 */
++	ret = p->send(p->cookie, request);
++	if (ret)
++		goto failed;
++	spin_lock_irqsave(&p->lock, flags);
++	pmp_vote_reply(&p->vote, PMP_ENDPOINT, PMP_POWER_REPLY);
++	ret = pmp_vote_finish(&p->vote, kind);
++	spin_unlock_irqrestore(&p->lock, flags);
++	if (ret)
++		goto out;
++	dev_info(p->dev, "Retained %s enable accepted: request=%016llx reply=%016llx\n",
++		 kind == PMP_POWER_AGX ? "AGX" : "DISP", request, PMP_POWER_REPLY);
++	goto out;
++failed:
++	spin_lock_irqsave(&p->lock, flags);
++	pmp_vote_send_failed(&p->vote);
++	spin_unlock_irqrestore(&p->lock, flags);
++out:
++	mutex_unlock(&p->request);
++	device_unlock(p->dev);
++	return ret;
++}
++
++/* Probe creates the retained supplier links; get/check never change owners. */
++int apple_pmp_j713_display_prepare(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_prepare(consumer, PMP_POWER_DISP) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_display_prepare);
++
++int apple_pmp_j713_gpu_prepare(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_prepare(consumer, PMP_POWER_AGX) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_gpu_prepare);
++
++int apple_pmp_j713_display_check(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_check(consumer, PMP_POWER_DISP) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_display_check);
++
++int apple_pmp_j713_gpu_check(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_check(consumer, PMP_POWER_AGX) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_gpu_check);
++
++int apple_pmp_j713_display_get(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_get(consumer, PMP_POWER_DISP) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_display_get);
++
++int apple_pmp_j713_gpu_get(struct device *consumer)
++{
++	return apple_pmp_j713_board() ? pmp_power_get(consumer, PMP_POWER_AGX) : -ENODEV;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_j713_gpu_get);
+diff --git a/drivers/soc/apple/pmp-export.c b/drivers/soc/apple/pmp-export.c
+index 09804b23b760dc008abe1e0744a37dda37c3c5da..41091755a77c66b3ea7d3f06975ddd53dfa4e0a8 100644
+--- a/drivers/soc/apple/pmp-export.c
++++ b/drivers/soc/apple/pmp-export.c
+@@ -66,7 +66,7 @@ int apple_pmp_set_device_power(u8 command, u16 device_id, u32 enabled)
+ 	guard(mutex)(&pmp_lock);
+ 	if (!pmp_data)
+ 		return -ENODEV;
+-	/* The 25G83 PTD readiness is required, with no elapsed-time fallback. */
++	/* The matched native report must be ready; never use an elapsed-time fallback. */
+ 	ret = apple_pmp_report_wait_supplier_ready(pmp_device, 5000);
+ 	if (ret)
+ 		return ret;
+diff --git a/drivers/soc/apple/pmp-telemetry.c b/drivers/soc/apple/pmp-telemetry.c
+index 5979d19faf3c4c19aae6137c151d47c0a77c96fb..fb9c1605e874d6a03cecc72b98be2e364e5ead46 100644
+--- a/drivers/soc/apple/pmp-telemetry.c
++++ b/drivers/soc/apple/pmp-telemetry.c
+@@ -1,16 +1,20 @@
+ // SPDX-License-Identifier: GPL-2.0-only OR MIT
+ /* Read-only sensors supplied by the existing PMP firmware owner. */
+ #include <linux/device.h>
++#include <linux/atomic.h>
++#include <linux/spinlock.h>
+ #include <linux/hwmon.h>
+ #include <linux/io.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/mutex.h>
+-#include <linux/module.h>
+ #include <linux/rculist.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ #include <linux/soc/apple/pmp-telemetry.h>
+ #include <linux/soc/apple/pmp-temps.h>
++#include <linux/soc/apple/pmp-power-policy.h>
+ 
+ bool apple_pmp_telemetry_retained_board(void)
+ {
+@@ -20,6 +24,7 @@ bool apple_pmp_telemetry_retained_board(void)
+ 
+ static LIST_HEAD(apple_pmp_telemetry_list);
+ static DEFINE_MUTEX(apple_pmp_telemetry_lock);
++static atomic64_t apple_pmp_telemetry_generation = ATOMIC64_INIT(0);
+ 
+ struct apple_pmp_telemetry {
+ 	struct device *dev;
+@@ -27,6 +32,9 @@ struct apple_pmp_telemetry {
+ 	void __iomem *sram;
+ 	void __iomem *asc;
+ 	bool online;
++	spinlock_t gpu_lock;
++	struct apple_pmp_gpu_lease gpu;
++	u64 generation;
+ };
+ 
+ static bool apple_pmp_telemetry_online(const struct apple_pmp_telemetry *sensors)
+@@ -61,6 +69,116 @@ int apple_pmp_telemetry_get_hotspot(const struct device_node *np, long *value)
+ }
+ EXPORT_SYMBOL_GPL(apple_pmp_telemetry_get_hotspot);
+ 
++struct apple_pmp_gpu {
++	struct device_node *node;
++	u64 generation;
++	u64 epoch;
++};
++
++struct apple_pmp_gpu *apple_pmp_gpu_get(struct device *dev)
++{
++	struct apple_pmp_telemetry *sensors;
++	struct apple_pmp_gpu *gpu;
++	int ret = -EPROBE_DEFER;
++
++	gpu = kzalloc_obj(*gpu);
++	if (!gpu)
++		return ERR_PTR(-ENOMEM);
++	gpu->node = of_parse_phandle(dev->of_node, "apple,pmp", 0);
++	if (!gpu->node) {
++		ret = -EINVAL;
++		goto fail;
++	}
++	rcu_read_lock();
++	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list) {
++		if (sensors->dev->of_node != gpu->node || !READ_ONCE(sensors->online))
++			continue;
++		spin_lock(&sensors->gpu_lock);
++		gpu->epoch = apple_pmp_gpu_lease_attach(&sensors->gpu);
++		spin_unlock(&sensors->gpu_lock);
++		if (!gpu->epoch) {
++			ret = -EBUSY;
++			break;
++		}
++		gpu->generation = sensors->generation;
++		ret = 0;
++		break;
++	}
++	rcu_read_unlock();
++	if (!ret)
++		return gpu;
++fail:
++	of_node_put(gpu->node);
++	kfree(gpu);
++	return ERR_PTR(ret);
++}
++EXPORT_SYMBOL_GPL(apple_pmp_gpu_get);
++
++void apple_pmp_gpu_put(struct apple_pmp_gpu *gpu)
++{
++	struct apple_pmp_telemetry *sensors;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list) {
++		if (sensors->dev->of_node != gpu->node ||
++		    sensors->generation != gpu->generation)
++			continue;
++		spin_lock(&sensors->gpu_lock);
++		apple_pmp_gpu_lease_detach(&sensors->gpu, gpu->epoch);
++		spin_unlock(&sensors->gpu_lock);
++		break;
++	}
++	rcu_read_unlock();
++	of_node_put(gpu->node);
++	kfree(gpu);
++}
++EXPORT_SYMBOL_GPL(apple_pmp_gpu_put);
++
++unsigned int apple_pmp_gpu_power_state(struct apple_pmp_gpu *gpu)
++{
++	struct apple_pmp_telemetry *sensors;
++	unsigned int level = 8;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list) {
++		if (sensors->dev->of_node != gpu->node ||
++		    sensors->generation != gpu->generation || !READ_ONCE(sensors->online))
++			continue;
++		if (readl(sensors->asc + 0x44) & BIT(4)) {
++			spin_lock(&sensors->gpu_lock);
++			level = apple_pmp_gpu_lease_level(&sensors->gpu, gpu->epoch, ktime_get_ns());
++			spin_unlock(&sensors->gpu_lock);
++		}
++		break;
++	}
++	rcu_read_unlock();
++	return level;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_gpu_power_state);
++
++u64 apple_pmp_gpu_epoch(const struct apple_pmp_sensor_data *data)
++{
++	struct apple_pmp_telemetry *sensors = data->cookie;
++	u64 epoch;
++
++	spin_lock(&sensors->gpu_lock);
++	epoch = sensors->gpu.attached ? sensors->gpu.epoch : 0;
++	spin_unlock(&sensors->gpu_lock);
++	return epoch;
++}
++EXPORT_SYMBOL_GPL(apple_pmp_gpu_epoch);
++
++void apple_pmp_gpu_publish(const struct apple_pmp_sensor_data *data,
++			   u64 epoch, unsigned int level, u64 sample_ns)
++{
++	struct apple_pmp_telemetry *sensors = data->cookie;
++
++	spin_lock(&sensors->gpu_lock);
++	apple_pmp_gpu_lease_publish(&sensors->gpu, epoch, level, sample_ns);
++	spin_unlock(&sensors->gpu_lock);
++}
++EXPORT_SYMBOL_GPL(apple_pmp_gpu_publish);
++
+ static int apple_pmp_sensor_read(void *cookie, unsigned int channel,
+ 				 long *value)
+ {
+@@ -177,9 +295,11 @@ int apple_pmp_telemetry_register(struct device *dev, void __iomem *sram,
+ 				       sensors);
+ 	if (ret)
+ 		return ret;
++	spin_lock_init(&sensors->gpu_lock);
+ 	sensors->sram = sram;
+ 	sensors->asc = asc;
+ 	sensors->online = true;
++	sensors->generation = atomic64_inc_return(&apple_pmp_telemetry_generation);
+ 	mutex_lock(&apple_pmp_telemetry_lock);
+ 	list_add_tail_rcu(&sensors->list, &apple_pmp_telemetry_list);
+ 	mutex_unlock(&apple_pmp_telemetry_lock);
+@@ -191,6 +311,7 @@ int apple_pmp_telemetry_register(struct device *dev, void __iomem *sram,
+ 	}
+ 	data.read = apple_pmp_sensor_read;
+ 	data.cookie = sensors;
++	data.dev = dev;
+ 	child = platform_device_register_data(dev, "apple-pmp-thermal",
+ 					      PLATFORM_DEVID_AUTO, &data,
+ 					      sizeof(data));
+@@ -209,7 +330,11 @@ void apple_pmp_telemetry_stop(struct device *dev)
+ 
+ 	rcu_read_lock();
+ 	list_for_each_entry_rcu(sensors, &apple_pmp_telemetry_list, list)
+-		if (sensors->dev == dev)
++		if (sensors->dev == dev) {
++			spin_lock(&sensors->gpu_lock);
+ 			WRITE_ONCE(sensors->online, false);
++			apple_pmp_gpu_lease_publish(&sensors->gpu, 0, 8, 0);
++			spin_unlock(&sensors->gpu_lock);
++		}
+ 	rcu_read_unlock();
+ }
+diff --git a/drivers/soc/apple/pmp.rs b/drivers/soc/apple/pmp.rs
+index 02ac4d87815d4365f8aa398fb32e6acd460bc484..666aea597636ec16b986e0e30fd55ea93ed45b41 100644
+--- a/drivers/soc/apple/pmp.rs
++++ b/drivers/soc/apple/pmp.rs
+@@ -3,10 +3,13 @@
+ 
+ //! Apple PMP driver
+ //!
++//! The Rust owner of the PMP RTKit session. It is linked into the pmp module
++//! together with the retained J713 power-vote bridge and read-only telemetry.
++//!
+ //! Copyright (C) The Asahi Linux Contributors
+ 
+ use core::mem;
+-use core::sync::atomic::{AtomicBool, Ordering};
++use core::sync::atomic::{fence, AtomicI32, AtomicPtr, Ordering};
+ 
+ mod pmp_bootargs;
+ mod pmp_power;
+@@ -38,7 +41,8 @@ use kernel::{
+     },
+     kvec,
+     module_platform_driver,
+-    new_condvar, new_mutex,
++    new_condvar,
++    new_mutex,
+     of,
+     platform,
+     prelude::*,
+@@ -50,7 +54,8 @@ use kernel::{
+     sync::{
+         aref::ARef,
+         Arc,
+-        CondVar, CondVarTimeoutResult,
++        CondVar,
++        CondVarTimeoutResult,
+         Mutex, //
+     },
+     transmute::{
+@@ -144,11 +149,14 @@ struct PmpData {
+     rtkit: Mutex<Option<rtkit::RtKit<PmpData>>>,
+     #[pin]
+     state: Mutex<PmpState>,
+-    failed: AtomicBool,
+     #[pin]
+     power_command: Mutex<Command>,
+     #[pin]
+     power_reply: CondVar,
++    /// The C power-vote bridge, published once and retained until reboot.
++    display: AtomicPtr<bindings::apple_pmp_display>,
++    /// The first failure seen before or after the bridge was published.
++    display_error: AtomicI32,
+ }
+ 
+ impl PmpData {
+@@ -165,9 +173,10 @@ impl PmpData {
+                     state <- new_mutex!(PmpState::new()?),
+                     power_command <- new_mutex!(Command::Idle),
+                     power_reply <- new_condvar!(),
+-                    failed: AtomicBool::new(false),
+                     pmp_mmio,
+                     asc_mmio,
++                    display: AtomicPtr::new(core::ptr::null_mut()),
++                    display_error: AtomicI32::new(0),
+                 }
+             ),
+             GFP_KERNEL,
+@@ -372,10 +381,28 @@ impl PmpData {
+         let msg = (OPC_SET_IOREG | OPC_ACK_MASK) << OPC_SHIFT | len;
+         Ok(msg)
+     }
+-    fn fail_telemetry(&self) {
+-        self.failed.store(true, Ordering::SeqCst);
+-        // SAFETY: the telemetry provider is owned by this live PMP device.
++    fn fail_display(&self, error: Error) {
++        // Publish failure before looking up either lazily registered consumer.
++        // Pair with the post-registration fence below: registration cannot miss
++        // the error while this path also misses the newly published provider.
++        let _ = self.display_error.compare_exchange(
++            0,
++            error.to_errno(),
++            Ordering::SeqCst,
++            Ordering::SeqCst,
++        );
++        fence(Ordering::SeqCst);
++        // SAFETY: a published telemetry provider is retained by this PMP device.
+         unsafe { bindings::apple_pmp_telemetry_stop(self.dev.as_raw()) };
++        *self.power_command.lock() = Command::Failed;
++        self.power_reply.notify_all();
++        // SAFETY: NULL is accepted, and a published bridge is never freed in this epoch.
++        unsafe {
++            bindings::apple_pmp_display_fail(
++                self.display.load(Ordering::SeqCst),
++                self.display_error.load(Ordering::SeqCst),
++            )
++        };
+     }
+     fn recv_message(&self, msg: u64) -> Result<()> {
+         let pm_command = (msg >> PM_COMMAND_SHIFT) & 0xff;
+@@ -383,9 +410,16 @@ impl PmpData {
+             let mut state = self.power_command.lock();
+             state.reply(msg);
+             if *state == Command::Failed {
+-                dev_err!(self.dev, "Unexpected PMP device-state reply {:#018x}; power commands disabled", msg);
++                dev_err!(
++                    self.dev,
++                    "Unexpected PMP device-state reply {:#018x}; power commands disabled",
++                    msg
++                );
++                drop(state);
++                self.fail_display(EPROTO);
++            } else {
++                self.power_reply.notify_all();
+             }
+-            self.power_reply.notify_all();
+             return Ok(());
+         }
+         let opc = (msg >> OPC_SHIFT) & 0xFF;
+@@ -411,6 +445,58 @@ impl PmpData {
+     }
+ }
+ 
++unsafe extern "C" fn display_send(cookie: *const kernel::ffi::c_void, word: u64) -> i32 {
++    // SAFETY: the C bridge holds this Arc's foreign reference until reboot.
++    let _data = unsafe { Arc::<PmpData>::borrow(cookie.cast_mut()) };
++    // Use the shared, serialized PMP command path for all power consumers.
++    // It validates supplier readiness and consumes the exact untagged reply.
++    match word {
++        0x0020f50100000000 => unsafe { bindings::apple_pmp_set_device_power(0x0f, 5, 1) },
++        0x0020f80100000000 => unsafe { bindings::apple_pmp_set_device_power(0x0f, 8, 1) },
++        _ => EINVAL.to_errno(),
++    }
++}
++
++/// Private bridge entry: resolve typed data only after the PMP provider has bound.
++///
++/// # Safety
++/// `raw` is a live, fully bound device with its device lock held by the caller.
++#[kernel::macros::export]
++unsafe extern "C" fn apple_pmp_display_bound_owner(
++    raw: *mut bindings::device,
++) -> *mut bindings::apple_pmp_display {
++    // SAFETY: guaranteed by the C caller under the supplier device lock.
++    let dev = unsafe { device::Device::<device::Normal>::from_raw(raw) };
++    // SAFETY: the C caller checked the bound PMP driver and holds its device lock.
++    let ptr = dev.get_drvdata::<PmpDriver>();
++    if ptr.is_null() {
++        return core::ptr::null_mut();
++    }
++    // SAFETY: the checked PMP driver stored this pinned PmpDriver, and the
++    // device lock excludes unbind for the entire read-only borrow.
++    let driver = unsafe { &*ptr };
++    let data = &driver.0;
++    let existing = data.display.load(Ordering::Acquire);
++    if !existing.is_null() {
++        return existing;
++    }
++    let cookie = data.clone().into_foreign();
++    // SAFETY: callback borrows this Arc; registration validates identity and sends nothing.
++    let display = unsafe { bindings::apple_pmp_display_register(raw, cookie, Some(display_send)) };
++    if display.is_null() {
++        // SAFETY: registration did not take ownership of the foreign reference.
++        drop(unsafe { Arc::<PmpData>::from_foreign(cookie) });
++    } else {
++        data.display.store(display, Ordering::SeqCst);
++        let error = data.display_error.load(Ordering::SeqCst);
++        if error != 0 {
++            // SAFETY: the bridge is now retained and must inherit earlier failures.
++            unsafe { bindings::apple_pmp_display_fail(display, error) };
++        }
++    }
++    display
++}
++
+ unsafe impl Send for PmpData {}
+ unsafe impl Sync for PmpData {}
+ 
+@@ -448,11 +534,13 @@ pub unsafe extern "C" fn apple_pmp_send_power_command(
+     let mut state = data.power_command.lock();
+     if let Err(error) = sent {
+         *state = Command::Failed;
++        drop(state);
++        data.fail_display(error);
+         return error.to_errno();
+     }
+     let mut remaining = kernel::time::msecs_to_jiffies(1000);
+     while matches!(*state, Command::Pending(_)) {
+-        match data.power_reply.wait_interruptible_timeout(&mut state, remaining) {
++        match data.power_reply.wait_timeout(&mut state, remaining) {
+             CondVarTimeoutResult::Woken { jiffies } => remaining = jiffies,
+             CondVarTimeoutResult::Timeout | CondVarTimeoutResult::Signal { .. } => {
+                 // A reply may have arrived while the waiter reacquired its
+@@ -460,17 +548,30 @@ pub unsafe extern "C" fn apple_pmp_send_power_command(
+                 // untagged stream after an ambiguous wait.
+                 if *state != Command::Complete {
+                     *state = Command::Failed;
+-                    dev_err!(data.dev, "PMP device-power request {:#018x} did not complete", message);
++                    dev_err!(
++                        data.dev,
++                        "PMP device-power request {:#018x} did not complete",
++                        message
++                    );
++                    drop(state);
++                    data.fail_display(ETIMEDOUT);
+                     return ETIMEDOUT.to_errno();
+                 }
+             }
+         }
+     }
+     if *state != Command::Complete {
++        drop(state);
++        data.fail_display(EIO);
+         return EIO.to_errno();
+     }
+     *state = Command::Idle;
+-    dev_dbg!(data.dev, "PMP device={} enabled={} acknowledged", device_id, enabled);
++    dev_dbg!(
++        data.dev,
++        "PMP device={} enabled={} acknowledged",
++        device_id,
++        enabled
++    );
+     0
+ }
+ 
+@@ -492,15 +593,13 @@ impl rtkit::Operations for PmpData {
+     fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _ep: u8, msg: u64) {
+         let ret = data.recv_message(msg);
+         if let Err(e) = ret {
+-            data.fail_telemetry();
++            data.fail_display(e);
+             dev_err!(data.dev, "Failed to handle rtkit message, error: {:?}", e);
+         }
+     }
+ 
+     fn crashed(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _crashlog: Option<&[u8]>) {
+-        *data.power_command.lock() = Command::Failed;
+-        data.power_reply.notify_all();
+-        data.fail_telemetry();
++        data.fail_display(EIO);
+         dev_err!(data.dev, "PMP firmware crashed");
+     }
+ }
+@@ -555,9 +654,9 @@ impl platform::Driver for PmpDriver {
+     type Data<'bound> = PmpDriver;
+ 
+     fn suppress_bind_attrs() -> bool {
+-        // Firmware and its telemetry consumers are retained until reboot.
+-        // SAFETY: read-only machine compatibility check.
+-        unsafe { bindings::apple_pmp_telemetry_retained_board() }
++        // Retained J713 power votes have no teardown path.
++        // SAFETY: read-only board identity check; other boards remain unchanged.
++        unsafe { bindings::apple_pmp_display_retained_board() }
+     }
+ 
+     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
+@@ -597,25 +696,30 @@ impl platform::Driver for PmpDriver {
+         };
+         // EP7 is a qualified startup dependency only on the retained J713 PMP.
+         // SAFETY: the predicate only reads machine compatibility.
+-        let needs_coreanalytics = cfg.coreanalytics
+-            && unsafe { bindings::apple_pmp_telemetry_retained_board() };
++        let needs_coreanalytics =
++            cfg.coreanalytics && unsafe { bindings::apple_pmp_telemetry_retained_board() };
+         let rtkit = if needs_coreanalytics {
+             rtkit::RtKit::<PmpData>::new_with_coreanalytics(&dev, None, 0, data.clone())?
+         } else {
+             rtkit::RtKit::<PmpData>::new(&dev, None, 0, data.clone())?
+         };
+         data.rtkit.lock().as_mut().set(Some(rtkit));
+-        asc_mmio.relaxed().update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<1>());
++        asc_mmio
++            .relaxed()
++            .update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<1>());
+         data.start()?;
+         // SAFETY: the PMP owner retains both Devres mappings; managed child
+         // teardown and provider cleanup precede device mapping revocation.
+         to_result(unsafe {
+             bindings::apple_pmp_telemetry_register(
+-                dev.as_raw(), MmioBackend::as_ptr(pmp_mmio).cast(), pmp_mmio.size(),
++                dev.as_raw(),
++                MmioBackend::as_ptr(pmp_mmio).cast(),
++                pmp_mmio.size(),
+                 MmioBackend::as_ptr(asc_mmio).cast(),
+             )
+         })?;
+-        if data.failed.load(Ordering::SeqCst) {
++        fence(Ordering::SeqCst);
++        if data.display_error.load(Ordering::SeqCst) != 0 {
+             // SAFETY: registration returned the live managed provider.
+             unsafe { bindings::apple_pmp_telemetry_stop(dev.as_raw()) };
+         }
+@@ -629,7 +733,7 @@ impl platform::Driver for PmpDriver {
+     }
+ 
+     fn unbind<'bound>(_dev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
+-        this.0.fail_telemetry();
++        this.0.fail_display(ENODEV);
+     }
+ }
+ 
+diff --git a/include/linux/soc/apple/pmp-display.h b/include/linux/soc/apple/pmp-display.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f919a4c362d6cec5eb19e3717a2e97a9d1706a7b
+--- /dev/null
++++ b/include/linux/soc/apple/pmp-display.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++#ifndef _LINUX_SOC_APPLE_PMP_DISPLAY_H
++#define _LINUX_SOC_APPLE_PMP_DISPLAY_H
++
++#include <linux/of.h>
++#include <linux/types.h>
++
++/* The retained M4 bridge and raw thermal records are qualified for J713. */
++static inline bool apple_pmp_j713_board(void)
++{
++	return of_machine_is_compatible("apple,j713") &&
++	       of_machine_is_compatible("apple,t8132");
++}
++
++struct device;
++struct apple_pmp_display;
++
++/* Boards whose PMP session carries the power-vote bridge below. */
++bool apple_pmp_display_retained_board(void);
++
++/*
++ * Private bridge for the Rust PMP owner (pmp-core.rs); there is no second
++ * mailbox owner. The bridge sends untagged power requests through the
++ * owner's RTKit session and consumes their replies.
++ */
++struct apple_pmp_display *apple_pmp_display_register(struct device *dev,
++		const void *cookie, int (*send)(const void *cookie, u64 word));
++bool apple_pmp_display_receive(struct apple_pmp_display *display, u8 endpoint, u64 word);
++void apple_pmp_display_fail(struct apple_pmp_display *display, int error);
++/* Internal: caller holds the bound supplier device lock. */
++struct apple_pmp_display *apple_pmp_display_bound_owner(struct device *dev);
++
++/* J713 votes share the existing PMP owner's untagged request stream.
++ * Prepare is probe-only; accepted DISP/AGX votes and supplier links persist
++ * until reboot.
++ */
++int apple_pmp_j713_display_prepare(struct device *consumer);
++int apple_pmp_j713_display_get(struct device *consumer);
++int apple_pmp_j713_display_check(struct device *consumer);
++int apple_pmp_j713_gpu_prepare(struct device *consumer);
++int apple_pmp_j713_gpu_get(struct device *consumer);
++int apple_pmp_j713_gpu_check(struct device *consumer);
++
++#endif
+diff --git a/include/linux/soc/apple/pmp-power-policy.h b/include/linux/soc/apple/pmp-power-policy.h
+index 4213a6af660f85eae642fe65061e2cd6585ba27d..faef838ea2412668095905caf3807e051d8b2909 100644
+--- a/include/linux/soc/apple/pmp-power-policy.h
++++ b/include/linux/soc/apple/pmp-power-policy.h
+@@ -18,6 +18,7 @@ struct apple_pmp_power_policy {
+ 	long long credit_mj;
+ 	int sustainable_mw, allowed_mw, total_mw, filtered_mc;
+ 	unsigned int level[3], next_release, good;
++	unsigned int active;
+ 	bool initialized, fault;
+ };
+ 
+@@ -48,13 +49,29 @@ static inline void apple_pmp_power_init(struct apple_pmp_power_policy *s)
+ 	*s = (struct apple_pmp_power_policy) {
+ 		.sustainable_mw = 8000, .allowed_mw = 8000,
+ 		.level = {8, 8, 8}, .fault = true,
++		.active = 7,
+ 	};
+ }
+ 
++/* A newly attached consumer starts restricted. An absent consumer cannot
++ * absorb releases or be selected as a way to reduce measured consumption.
++ */
++static inline void apple_pmp_power_set_active(struct apple_pmp_power_policy *s,
++					    unsigned int active)
++{
++	for (unsigned int i = 0; i < 3; i++) {
++		if (!(active & (1U << i)))
++			s->level[i] = 0;
++		else if (!(s->active & (1U << i)))
++			s->level[i] = 8;
++	}
++	s->active = active & 7;
++}
++
+ static inline void apple_pmp_power_fail(struct apple_pmp_power_policy *s)
+ {
+ 	for (unsigned int i = 0; i < 3; i++)
+-		s->level[i] = 8;
++		s->level[i] = s->active & (1U << i) ? 8 : 0;
+ 	s->fault = true;
+ 	s->good = 0;
+ }
+@@ -81,7 +98,10 @@ static inline void apple_pmp_power_sample(struct apple_pmp_power_policy *s,
+ 	if (s->last_ns && dt < 400000000ULL)
+ 		return;
+ 	s->last_ns = now;
+-	s->total_mw = mw[0] + mw[1] + mw[2];
++	s->total_mw = 0;
++	for (i = 0; i < 3; i++)
++		if (s->active & (1U << i))
++			s->total_mw += mw[i];
+ 	if (!s->initialized) {
+ 		s->initialized = true;
+ 		s->credit_mj = mc < 75000 ? APPLE_PMP_BURST_MJ : 0;
+@@ -132,7 +152,7 @@ static inline void apple_pmp_power_sample(struct apple_pmp_power_policy *s,
+ 		 * An idle CPU does not reserve watts that the GPU could use (or vice versa).
+ 		 */
+ 		for (i = 0; i < 3; i++)
+-			if (s->level[i] < 8 && (chosen == 3 ||
++			if ((s->active & (1U << i)) && s->level[i] < 8 && (chosen == 3 ||
+ 			    mw[i] * weight[chosen] > mw[chosen] * weight[i]))
+ 				chosen = i;
+ 		if (chosen < 3)
+@@ -146,7 +166,8 @@ static inline void apple_pmp_power_sample(struct apple_pmp_power_policy *s,
+ 		for (i = 0; i < 3; i++) {
+ 			unsigned int candidate = (s->next_release + i) % 3;
+ 
+-			if (s->level[candidate] && (chosen == 3 ||
++			if ((s->active & (1U << candidate)) && s->level[candidate] &&
++			    (chosen == 3 ||
+ 			    s->level[candidate] * weight[candidate] >
+ 			    s->level[chosen] * weight[chosen]))
+ 				chosen = candidate;
+@@ -158,4 +179,64 @@ static inline void apple_pmp_power_sample(struct apple_pmp_power_policy *s,
+ 		s->change_ns = now;
+ 	}
+ }
++
++/* Atomic publication contains the sample time and restriction together.
++ * Zero, stale, future or malformed publications all select full protection.
++ */
++static inline unsigned long long apple_pmp_gpu_budget_pack(unsigned int level,
++							 unsigned long long ns)
++{
++	return ((ns / 1000000ULL) << 4) | (level < 8 ? level : 8);
++}
++
++static inline unsigned int apple_pmp_gpu_budget_level(unsigned long long value,
++						      unsigned long long now)
++{
++	if (!value || now / 1000000ULL - (value >> 4) >
++	    APPLE_PMP_POWER_STALE_NS / 1000000ULL || (value & 15) > 8)
++		return 8;
++	return value & 15;
++}
++/* Provider-serialized consumer epochs. A rail read started for one consumer
++ * must never relax the budget of a replacement that attached while it slept.
++ */
++struct apple_pmp_gpu_lease {
++	unsigned long long epoch, publication;
++	bool attached;
++};
++
++static inline unsigned long long apple_pmp_gpu_lease_attach(struct apple_pmp_gpu_lease *s)
++{
++	if (s->attached || s->epoch == ~0ULL)
++		return 0;
++	s->attached = true;
++	s->publication = 0;
++	return ++s->epoch;
++}
++
++static inline void apple_pmp_gpu_lease_detach(struct apple_pmp_gpu_lease *s,
++					     unsigned long long epoch)
++{
++	if (s->epoch == epoch) {
++		s->attached = false;
++		s->publication = 0;
++	}
++}
++
++static inline void apple_pmp_gpu_lease_publish(struct apple_pmp_gpu_lease *s,
++	unsigned long long epoch, unsigned int level, unsigned long long sample_ns)
++{
++	/* Invalidation is always safe, including removal/mode changes. */
++	if (!sample_ns)
++		s->publication = 0;
++	else if (s->attached && epoch == s->epoch)
++		s->publication = apple_pmp_gpu_budget_pack(level, sample_ns);
++}
++
++static inline unsigned int apple_pmp_gpu_lease_level(const struct apple_pmp_gpu_lease *s,
++	unsigned long long epoch, unsigned long long now)
++{
++	return s->attached && s->epoch == epoch ?
++		apple_pmp_gpu_budget_level(s->publication, now) : 8;
++}
+ #endif
+diff --git a/include/linux/soc/apple/pmp-telemetry.h b/include/linux/soc/apple/pmp-telemetry.h
+index 9081243029157c125df0b116f4f626d708ec8319..6f133113e71dc4b994be7784fc0515d22b00d8cd 100644
+--- a/include/linux/soc/apple/pmp-telemetry.h
++++ b/include/linux/soc/apple/pmp-telemetry.h
+@@ -9,17 +9,29 @@ bool apple_pmp_telemetry_retained_board(void);
+ struct device;
+ struct device_node;
+ struct apple_pmp_telemetry;
++struct apple_pmp_gpu;
+ 
+ /* Owned by the PMP parent; consumers cannot restart or map the firmware. */
+ struct apple_pmp_sensor_data {
+ 	int (*read)(void *cookie, unsigned int channel, long *value);
+ 	void *cookie;
++	struct device *dev;
+ };
+ 
+ int apple_pmp_telemetry_register(struct device *dev, void __iomem *sram,
+ 			       size_t size, void __iomem *asc);
+ void apple_pmp_telemetry_stop(struct device *dev);
+ 
++/* The GPU consumer is resolved through its apple,pmp phandle. No consumer
++ * retains a pointer into the removable thermal policy or its work items.
++ */
++struct apple_pmp_gpu *apple_pmp_gpu_get(struct device *dev);
++void apple_pmp_gpu_put(struct apple_pmp_gpu *gpu);
++unsigned int apple_pmp_gpu_power_state(struct apple_pmp_gpu *gpu);
++u64 apple_pmp_gpu_epoch(const struct apple_pmp_sensor_data *data);
++void apple_pmp_gpu_publish(const struct apple_pmp_sensor_data *data,
++			   u64 epoch, unsigned int level, u64 sample_ns);
++
+ /*
+  * Read through the bound firmware owner, never through a consumer mapping.
+  * This checks provider/crash state and record consistency, not firmware
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index d7e434830f545b6f06e5e3be0e82ff04dd36436f..b056b39550678f8cabffddb1db6f56948f84c008 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -100,6 +100,7 @@
+ #include <linux/slab.h>
+ #include <linux/soc/apple/mailbox.h>
+ #include <linux/soc/apple/pmp-telemetry.h>
++#include <linux/soc/apple/pmp-display.h>
+ #include <linux/soc/apple/rtkit.h>
+ #include <linux/soc/apple/pmp.h>
+ #include <linux/sys_soc.h>

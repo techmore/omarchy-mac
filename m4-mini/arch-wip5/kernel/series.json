@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "source": {
+    "repository": "https://github.com/omacom/linux-aurora",
+    "commit": "2f725546d6ac6afe0bd5abfa1a844971519f0076",
+    "archive_root": "linux-aurora-2f725546d6ac6afe0bd5abfa1a844971519f0076",
+    "sha256": "3f1b9cd779cc4ff94b8ff0575388223e1da0894160763133eb6b836352272bad"
+  },
+  "wip5_hub_commit": "7f24d3b4bf0ca8e3227928c3690eb865f768f91f",
+  "j773g_peer_commit": "9002d19",
+  "graphics_pr": "https://github.com/aurora-silicon/linux/pull/367",
+  "graphics_pr_head": "49c5d9994fec1b94cdce004bfa19c950c06b119e",
+  "graphics_mbox_sha256": "477299d5a3c252671347ce15ee39c22a166cce9423940da92418edaef93fbe01",
+  "patches": [
+    {
+      "file": "aurora/0001-drm-apple-srgb-external-display-colour.patch",
+      "sha256": "6dc8aadcdc0c7c39710d3b9164c388f11b0b2fa111b73e8e14a63bb759ba8fe1"
+    },
+    {
+      "file": "aurora/0002-drm-apple-free-dp-tunnel-route-from-silent-dcpext.patch",
+      "sha256": "fdd6f9cd13ca90b4500130d289182eb69728e25afe5a5ed3f0c92571aa54fd1a"
+    },
+    {
+      "file": "aurora/0003-drm-apple-dcp-let-a-typec-port-with-hpd-take-over-a-held-pipeline.patch",
+      "sha256": "2273d0ee008bafc702358bfc553ecfdd8cd9ea8d665c4ce5fb2b3b36af4f9111"
+    },
+    {
+      "file": "aurora/0004-drm-apple-dcp-route-a-dp-alt-port-only-once-its-sink-asserts-hpd.patch",
+      "sha256": "111a8d0d4edca05367301e8e1afc3a487bf1638b015073ea81ae64cd1d4817ec"
+    },
+    {
+      "file": "aurora/0005-usb-typec-tipd-treat-enospc-as-a-taken-display-on-every-soc.patch",
+      "sha256": "f6c63701d3197204abd1f3c3bd9fb9c44a0a7156afdd63cba2feb04c5522c037"
+    },
+    {
+      "file": "j773g/0001-j773g-smc-forward-port.patch",
+      "sha256": "3e8b6afa3c9c9cbf25719bf3e0a7d3ee21361850e37ba15a436e62c11c2666fd"
+    },
+    {
+      "file": "j773g/0002-t8132-nvme-explicit-flush.patch",
+      "sha256": "071e10622373e9ec28bccf5665554b187bc42dcbf66d02a6225427eb102304cd"
+    },
+    {
+      "file": "j773g/0003-nvme-allow-adt-handoff-resource-order.patch",
+      "sha256": "d9b99dd9f8522cf03816ea41287c6578eb49e73594b5523c66c2f4fed214af2b"
+    },
+    {
+      "file": "j773g/0004-j773g-nvme-adt-placeholders.patch",
+      "sha256": "9bfae9ce1b72c4e301ecc10914e193fb5e0712f447cc09f2300e7e538e522252"
+    },
+    {
+      "file": "j773g/0007-j773g-rear-usb-draft.patch",
+      "sha256": "b5580ff924f967601b615a8da41e990136bf3a14ee90f8cf8fc42fcd753eb4d1"
+    },
+    {
+      "file": "graphics/0001-inherited-iommu-addresses.patch",
+      "sha256": "b06729edc2c3c87d9be4127d2d8de6e4a3e7bb414df1fefa58a20d60927d1fdb"
+    },
+    {
+      "file": "graphics/0002-rust-drm-helpers.patch",
+      "sha256": "21ddc6d84ce02a201327d6d033c156e6c5f58454dba9508378ab2f8d9a83dcdc"
+    },
+    {
+      "file": "graphics/0003-t8132-graphics-bindings.patch",
+      "sha256": "15059dfccd99122928102ecc927848972ec2a38509fc12c030ed61569a1ef46e"
+    },
+    {
+      "file": "graphics/0004-m4-air-pmp-telemetry.patch",
+      "sha256": "4490655a598254c30d672e021f5601cdafc6411a1a5e9e5d5583b60ec6af18e8"
+    },
+    {
+      "file": "graphics/0005-m4-air-cpufreq-ownership-wip5.patch",
+      "sha256": "bb0bca371012d8eb7fca0710ed10dee7e7516f03fd19cbb5e7617e5b67e02dd6"
+    },
+    {
+      "file": "graphics/0006-m4-air-thermal-policy.patch",
+      "sha256": "763c01e1992590dcfb566d81eb98890e9c2c4e9ee62d9d3837ef940b673490eb"
+    },
+    {
+      "file": "graphics/0007-m4-air-pmp-graphics-wip5.patch",
+      "sha256": "9db04b15e76982a296b95a45906f0c928191d40073546dd973eaed81520c105a"
+    },
+    {
+      "file": "graphics/0008-j773g-hdmi-wiring-draft.patch",
+      "sha256": "b94c0dacadb2d06fb388f7405db0cbfdfc142de94472b00074dc2644bdba0cf3"
+    },
+    {
+      "file": "graphics/0009-m4-air-gpu-thermal.patch",
+      "sha256": "a3d0abfd674a771c188b1ab3fa3bafe79c5c4b209ed2614a34ca430a57c47b20"
+    }
+  ],
+  "status": "draft: disabled J773g HDMI wiring and partial M4 graphics prerequisites; not a complete mini graphics port",
+  "basic_pr": "https://github.com/aurora-silicon/linux/pull/366",
+  "basic_pr_head": "98a8f830df94a7dcaf7de37bfa915240afa2dda8",
+  "basic_mbox_sha256": "80fc5353a21181b2cb14a62e06cbc41d06a945304d1657987a02c3c9516ce4c6"
+}
