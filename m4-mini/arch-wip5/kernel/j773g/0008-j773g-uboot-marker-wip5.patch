@@ -1,0 +1,17 @@
+Subject: [WIP] arm64: dts: request J773g U-Boot storage import
+
+Adapted from the mini agent’s 0008-j773g-uboot-import-marker.patch at e97673b; rebased after the rear USB and HDMI includes. The marker is an opt-in, not proof of boot source identity.
+
+diff --git a/arch/arm64/boot/dts/apple/t8132-j773g.dts b/arch/arm64/boot/dts/apple/t8132-j773g.dts
+index 3f196732d3c535902cc676a3d5bf1733a7939101..fa6508c43d6b8a00e1bfc8282765a20577854442 100644
+--- a/arch/arm64/boot/dts/apple/t8132-j773g.dts
++++ b/arch/arm64/boot/dts/apple/t8132-j773g.dts
+@@ -103,3 +103,8 @@
+ };
+ 
+ #include "t8132-j773g-usb.dtsi"
++
++&{/chosen} {
++	/* Explicitly request J773g runtime import from a matching U-Boot. */
++	u-boot,j773g-dtb-source = "2f725546d6ac6afe0bd5abfa1a844971519f0076";
++};

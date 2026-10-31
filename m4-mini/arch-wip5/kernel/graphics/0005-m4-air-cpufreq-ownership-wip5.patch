@@ -2,10 +2,10 @@ From: Eryk Wieliczko <eryk@wieliczko.ninja>
 
 Subject: [WIP] cpufreq: forward-port M4 thermal ownership to Aurora WIP5
 
-Adapted from aurora-silicon/linux PR #366 patch 18/27, source commit 9496f1922fd47f653549cd0ac5074043e1460c36. Resolve WIP5 structure context, serialize request removal with ownership updates, and retain J713-only hotplug behavior pending mini qualification.
+Adapted from aurora-silicon/linux PR #366 patch 18/27, source commit 9496f1922fd47f653549cd0ac5074043e1460c36. Resolve WIP5 structure context, retain J713-only hotplug behavior, and carry the mini agent’s fail-closed invalid bootstrap ceiling fix. Neither the J773g operating points nor thermal policy are qualified.
 
 diff --git a/drivers/cpufreq/apple-soc-cpufreq.c b/drivers/cpufreq/apple-soc-cpufreq.c
-index b0080dbdaeac748d8d652eee8ec501b9616325c8..45d5facf9385ed37bc7a740f36ab971b40861d24 100644
+index b0080dbdaeac748d8d652eee8ec501b9616325c8..bf31aa16f62ac191daf5177cda49615c5b3d6d5e 100644
 --- a/drivers/cpufreq/apple-soc-cpufreq.c
 +++ b/drivers/cpufreq/apple-soc-cpufreq.c
 @@ -27,6 +27,7 @@
@@ -85,19 +85,19 @@ index b0080dbdaeac748d8d652eee8ec501b9616325c8..45d5facf9385ed37bc7a740f36ab971b
 + */
 +static DEFINE_MUTEX(apple_soc_thermal_owner_lock);
 +
-+static unsigned int apple_soc_cpufreq_unmanaged_max(struct cpufreq_policy *policy)
++static s32 apple_soc_cpufreq_unmanaged_max(struct cpufreq_policy *policy)
 +{
 +	struct apple_cpu_priv *priv = policy->driver_data;
 +	struct cpufreq_frequency_table *p;
-+	unsigned int cap = 0, low = UINT_MAX;
++	unsigned int cap = 0;
 +
 +	cpufreq_for_each_valid_entry(p, policy->freq_table) {
-+		low = min(low, p->frequency);
 +		if (p->driver_data <= priv->info->max_unmanaged_pstate)
 +			cap = max(cap, p->frequency);
 +	}
 +
-+	return cap ?: low;
++	/* A missing bootstrap state must never become an unlimited QoS request. */
++	return cap && cap <= S32_MAX ? (s32)cap : -EINVAL;
 +}
 +
 +static s32 apple_soc_cpufreq_owner_cap(struct cpufreq_policy *policy)
@@ -186,10 +186,10 @@ index b0080dbdaeac748d8d652eee8ec501b9616325c8..45d5facf9385ed37bc7a740f36ab971b
  	/* Drain firmware-limit updates before releasing the OPP tables. */
  	apple_fast_die_exit(priv);
  
-+	/* Serialize removal with thermal consumers updating the same request. */
-+	mutex_lock(&apple_soc_thermal_owner_lock);
 +	if (freq_qos_request_active(&priv->unmanaged_cap))
 +		freq_qos_remove_request(&priv->unmanaged_cap);
++	/* Full teardown may leave a referenced policy in a thermal consumer. */
++	mutex_lock(&apple_soc_thermal_owner_lock);
 +	policy->driver_data = NULL;
 +	mutex_unlock(&apple_soc_thermal_owner_lock);
  	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);

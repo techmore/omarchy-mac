@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Prepare the pinned J773g m1n1 and U-Boot source drafts."""
+import argparse
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+SERIES = ROOT / 'm4-mini/arch-wip5/loader/series.json'
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b''):
+            result.update(block)
+    return result.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--m1n1-archive', type=Path, required=True)
+    parser.add_argument('--uboot-archive', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        series = json.loads(SERIES.read_text())
+        base = SERIES.parent.resolve(strict=True)
+        inputs = (('m1n1', args.m1n1_archive), ('uboot', args.uboot_archive))
+        for name, archive in inputs:
+            if archive.is_symlink() or not archive.is_file() or digest(archive) != series[name]['archive_sha256']:
+                raise ValueError(f'{name} archive does not match its pin')
+            for item in series[name]['patches']:
+                rel = PurePosixPath(item['file'])
+                if rel.is_absolute() or any(part in ('', '.', '..') for part in rel.parts):
+                    raise ValueError('unsafe patch path')
+                path = base.joinpath(*rel.parts)
+                if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(base):
+                    raise ValueError(f'missing or linked patch: {rel}')
+                if digest(path) != item['sha256']:
+                    raise ValueError(f'patch checksum mismatch: {rel}')
+        if args.output.exists() or args.output.is_symlink():
+            raise ValueError('output must be a new directory')
+        output = args.output.parent.resolve(strict=True) / args.output.name
+        output.mkdir(mode=0o700)
+        marker = output / 'INCOMPLETE'
+        marker.write_text('Incomplete WIP5 loader source; do not build or install.\n')
+        for name, archive_path in inputs:
+            expected = series[name]['archive_root']
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                for member in archive:
+                    path = PurePosixPath(member.name)
+                    if (path.is_absolute() or not path.parts or path.parts[0] != expected
+                            or any(part in ('', '.', '..') for part in path.parts)):
+                        raise ValueError(f'unsafe {name} archive member')
+                archive.extractall(output, filter='data')
+            tree = output / expected
+            for item in series[name]['patches']:
+                patch = base / item['file']
+                subprocess.run(['git', '-C', str(tree), 'apply', '--check', str(patch)], check=True)
+                subprocess.run(['git', '-C', str(tree), 'apply', str(patch)], check=True)
+        (output / 'receipt.json').write_text(json.dumps({
+            'm1n1_commit': series['m1n1']['commit'], 'uboot_commit': series['uboot']['commit'],
+            'm1n1_patches': series['m1n1']['patches'], 'uboot_patches': series['uboot']['patches'],
+            'configured_stage1': False, 'hardware_validated': False, 'ready_for_installation': False,
+        }, indent=2) + '\n')
+        marker.unlink()
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'm4-mini-prepare-wip5-loaders: {error}', file=sys.stderr)
+        return 1
+    print(f'Prepared the experimental WIP5 loader sources in {output}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -70,7 +70,7 @@
     },
     {
       "file": "graphics/0005-m4-air-cpufreq-ownership-wip5.patch",
-      "sha256": "bb0bca371012d8eb7fca0710ed10dee7e7516f03fd19cbb5e7617e5b67e02dd6"
+      "sha256": "3749be3953a415f530f0973d879c3b4c86875ae9387f39a49068be28ae78580a"
     },
     {
       "file": "graphics/0006-m4-air-thermal-policy.patch",
@@ -87,10 +87,23 @@
     {
       "file": "graphics/0009-m4-air-gpu-thermal.patch",
       "sha256": "a3d0abfd674a771c188b1ab3fa3bafe79c5c4b209ed2614a34ca430a57c47b20"
+    },
+    {
+      "file": "graphics/0010-m4-air-retained-dart.patch",
+      "sha256": "4baf63d450f7d36ede764614e5646b28d9fa9996e7afbf5ee2bfffda785145a2"
+    },
+    {
+      "file": "j773g/0008-j773g-uboot-marker-wip5.patch",
+      "sha256": "f63295ce42c17baccc7ca537e4aa8b5dfc42d619b4bbd6d75cc8e26add2c1bdd"
+    },
+    {
+      "file": "j773g/0009-j773g-usb-bindings.patch",
+      "sha256": "5c89047bf11f7920bd6d633d9f314a86bb29ea0d9091915a1894a26e869e3252"
     }
   ],
   "status": "draft: disabled J773g HDMI wiring and partial M4 graphics prerequisites; not a complete mini graphics port",
   "basic_pr": "https://github.com/aurora-silicon/linux/pull/366",
   "basic_pr_head": "98a8f830df94a7dcaf7de37bfa915240afa2dda8",
-  "basic_mbox_sha256": "80fc5353a21181b2cb14a62e06cbc41d06a945304d1657987a02c3c9516ce4c6"
+  "basic_mbox_sha256": "80fc5353a21181b2cb14a62e06cbc41d06a945304d1657987a02c3c9516ce4c6",
+  "j773g_peer_update": "e97673b"
 }

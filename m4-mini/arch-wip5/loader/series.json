@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "peer_commit": "e97673b",
+  "m1n1": {
+    "repository": "https://github.com/aurora-silicon/m1n1",
+    "commit": "cda8314d2121c0279e4ca811bc6c6293a663e5d0",
+    "archive_sha256": "5e853caee70e56ba082f33c1d557fa30d25e92c2c571251b8ff04bbbc356e244",
+    "patches": [
+      {
+        "file": "m1n1/0005-m1n1-j773g-ans-handoff.patch",
+        "sha256": "48af1ad00dff04954a9f13170bd56c7c8bf80ff31426f75028c013f2205998d4"
+      },
+      {
+        "file": "m1n1/0006-m1n1-no-display-build-option.patch",
+        "sha256": "3b22cb16755e47193bced112a2ca59821484763ef760b2404e562c95fa7da86c"
+      }
+    ],
+    "archive_root": "m1n1-cda8314d2121c0279e4ca811bc6c6293a663e5d0"
+  },
+  "uboot": {
+    "repository": "https://github.com/aurora-silicon/u-boot",
+    "commit": "cc47d3b7c86deb4094dc186d26799602272e37fb",
+    "patches": [
+      {
+        "file": "uboot/0007-uboot-j773g-storage-import.patch",
+        "sha256": "7666f067f9924a9c9f62d7c1eb61173f5f18d91503b993e887c2e3ac5751de93"
+      },
+      {
+        "file": "uboot/0009-uboot-j773g-optional-keyboard.patch",
+        "sha256": "caaac0b8bd933743e27dbeadb941c1d23c63a8ef7f164b89dbab8b8235f6d1b4"
+      }
+    ],
+    "archive_root": "u-boot-cc47d3b7c86deb4094dc186d26799602272e37fb",
+    "archive_sha256": "f136d227799596a1c4f3a8291a88edc782aa163db40de31d19c5f0b55f434ae3"
+  },
+  "status": "uninstalled draft; ESP selection, display handoff and recovery are unqualified"
+}

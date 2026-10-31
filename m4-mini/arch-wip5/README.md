@@ -39,6 +39,12 @@ The accompanying [kernel source series](kernel/README.md) pins the WIP5 base,
 the mini agent's current J773g changes and the first M4 Air graphics
 prerequisites. It is not a complete GPU or HDMI port.
 
+[Mesa's WIP5 interface check](mesa/README.md) keeps the older Gravity Mesa
+package from being mistaken for a compatible userspace build.
+
+The mini agent's [m1n1 and U-Boot drafts](loader/README.md) are recorded with
+their source pins. Their ESP selection and display handoff are still open.
+
 To prepare the boot source without installing it:
 
 ```sh

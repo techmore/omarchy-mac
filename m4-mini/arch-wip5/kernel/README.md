@@ -16,15 +16,24 @@ policy for the mini.
 Patch `0008` adds the J773g built-in HDMI controller, mailbox, DART, PHY,
 GPIO and display wiring adapted from Gravity `4fc326f6c25ccceb7515e2635c22e01fde5d3bac`.
 The new display nodes are disabled, and loader aliases are intentionally absent
-until the mini's M4 display handoff is integrated. The resulting J773g DTB
-compiled in the local ARM64 VM with defconfig, SHA-256
-`91949c01fb67eb8babfdc9609f362432a015b71e0d30e9ba3bb93e1a8e57f369`;
-decompilation confirmed the controller and supporting nodes remain disabled.
-This is not a native HDMI test or a display-ready device tree.
+until the mini's M4 display handoff is integrated. After the U-Boot marker and
+USB binding updates, the J773g DTB compiled in the local ARM64 VM with
+defconfig, SHA-256
+`72dae2b310ed331dd169a68e7b24b0c2c636d28bc2836be554afb181abca2436`.
+The compiled tree reports the HDMI controller disabled and contains the
+requested U-Boot marker. This is not a native HDMI test or a display-ready
+device tree.
 
 Patch `0009` adds the Air's GPU thermal-policy integration, still gated to
-J713. The following Air display-DART patch conflicts extensively with WIP5's
-newer DART implementation and has not been applied; it needs a semantic port.
+J713, and `0010` adds its retained-DART prerequisite. The following Air
+display-DART patch conflicts extensively with WIP5's newer DART implementation
+and has not been applied; it needs a semantic port.
+
+The final two J773g patches add the mini agent's opt-in U-Boot import marker
+and USB binding draft from `e97673b`. The marker was rebased after this tree's
+USB and HDMI includes. The mini agent also identified an invalid bootstrap
+frequency-limit edge case; the WIP5 CPU-frequency patch now fails closed when
+no eligible cap exists. This does not qualify the mini's thermal policy.
 
 The mini agent's separate m1n1 patches are not kernel patches and are not
 applied here. The remaining Air graphics series relies on the Air basic
